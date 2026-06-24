@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  cloudplay:
+    build: .
+    container_name: cloudplay
+    ports:
+      - "8080:8080"
+    # Для Android емулятора раскоментуй:
+    # devices:
+    #   - /dev/kvm:/dev/kvm
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    # Shared memory (потрібно для Chromium)
+    shm_size: '512mb'
