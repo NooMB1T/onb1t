@@ -1,65 +1,37 @@
 FROM ubuntu:22.04
+# CloudPlay v1.2 — ONE FILE, все всередині
+LABEL maintainer="CloudPlay"
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# ⚡ CloudPlay v1.2 — ALL-IN-ONE Dockerfile
-# Тобі потрібен ЛИШЕ цей файл у репозиторії!
-
-LABEL maintainer="CloudPlay v1.2"
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC \
-    LANG=C.UTF-8 \
-    ANDROID_SDK_ROOT=/opt/android-sdk \
-    PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/emulator:/opt/android-sdk/platform-tools \
-    CLOUDPLAY_PASSWORD=cloudplay
-
-# ── 1. Системні пакети ───────────────────────────────────────────
+# 1. Пакети
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
     openbox xfce4 xfce4-terminal \
     chromium-browser \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
-    net-tools procps \
-    fonts-liberation fontconfig libfontconfig1 \
-    openjdk-17-jdk-headless \
-    libgl1-mesa-glx libglu1-mesa \
+    net-tools procps fonts-liberation fontconfig libfontconfig1 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── 2. Node.js 20 ────────────────────────────────────────────────
+# 2. Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── 3. noVNC ─────────────────────────────────────────────────────
+# 3. noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
 
-# ── 4. Android SDK ───────────────────────────────────────────────
-RUN mkdir -p /opt/android-sdk/cmdline-tools \
-    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
-       -O /tmp/cmdtools.zip \
-    && unzip -q /tmp/cmdtools.zip -d /tmp/ \
-    && mv /tmp/cmdline-tools /opt/android-sdk/cmdline-tools/latest \
-    && rm -f /tmp/cmdtools.zip \
-    && yes | sdkmanager --sdk_root=/opt/android-sdk --licenses > /dev/null 2>&1 \
-    && sdkmanager --sdk_root=/opt/android-sdk \
-       "emulator" "platform-tools" "platforms;android-30" \
-       "system-images;android-30;google_apis;x86_64" \
-    && mkdir -p /root/.android/avd \
-    && echo no | avdmanager --sdk_root=/opt/android-sdk create avd \
-       -n CloudPhone -k "system-images;android-30;google_apis;x86_64" -d "pixel_4a" --force \
-    && printf 'hw.cpu.ncore=2\nhw.ramSize=2048\nhw.gpu.enabled=yes\nhw.gpu.mode=swiftshader_indirect\nhw.keyboard=yes\nshowDeviceFrame=no\n' \
-       >> /root/.android/avd/CloudPhone.avd/config.ini
-
-# ── 5. Директорії ────────────────────────────────────────────────
+# 4. Директорії
 RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx \
     && mkdir -p /root/.config/openbox /root/.config/xfce4 \
     && rm -f /etc/nginx/sites-enabled/default
 
-RUN cat > /app/frontend/package.json << 'CLOUDPLAY_FILE_000'
+RUN cat > /app/frontend/package.json << 'CPEOF000'
 {
   "name": "cloudplay-frontend",
   "version": "1.0.0",
@@ -79,9 +51,9 @@ RUN cat > /app/frontend/package.json << 'CLOUDPLAY_FILE_000'
   }
 }
 
-CLOUDPLAY_FILE_000
+CPEOF000
 
-RUN cat > /app/frontend/vite.config.js << 'CLOUDPLAY_FILE_001'
+RUN cat > /app/frontend/vite.config.js << 'CPEOF001'
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -99,9 +71,9 @@ export default defineConfig({
   },
 });
 
-CLOUDPLAY_FILE_001
+CPEOF001
 
-RUN cat > /app/frontend/index.html << 'CLOUDPLAY_FILE_002'
+RUN cat > /app/frontend/index.html << 'CPEOF002'
 <!DOCTYPE html>
 <html lang="uk">
   <head>
@@ -123,9 +95,9 @@ RUN cat > /app/frontend/index.html << 'CLOUDPLAY_FILE_002'
   </body>
 </html>
 
-CLOUDPLAY_FILE_002
+CPEOF002
 
-RUN cat > /app/frontend/src/main.jsx << 'CLOUDPLAY_FILE_003'
+RUN cat > /app/frontend/src/main.jsx << 'CPEOF003'
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
@@ -136,9 +108,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </React.StrictMode>
 );
 
-CLOUDPLAY_FILE_003
+CPEOF003
 
-RUN cat > /app/frontend/src/App.jsx << 'CLOUDPLAY_FILE_004'
+RUN cat > /app/frontend/src/App.jsx << 'CPEOF004'
 import { useState, useCallback, useEffect } from 'react';
 import Login from './components/Login.jsx';
 import Dashboard from './components/Dashboard.jsx';
@@ -212,9 +184,9 @@ export default function App() {
   return <><Dashboard onStart={handleStart} onLogout={handleLogout} toast={toast} /><Toast toasts={toasts} /></>;
 }
 
-CLOUDPLAY_FILE_004
+CPEOF004
 
-RUN cat > /app/frontend/src/components/Login.jsx << 'CLOUDPLAY_FILE_005'
+RUN cat > /app/frontend/src/components/Login.jsx << 'CPEOF005'
 import { useState } from 'react';
 
 export default function Login({ onLogin }) {
@@ -333,9 +305,9 @@ const a = {
     bottom:100, right:100, animation:'a4 11s ease-in-out infinite' },
 };
 
-CLOUDPLAY_FILE_005
+CPEOF005
 
-RUN cat > /app/frontend/src/components/Dashboard.jsx << 'CLOUDPLAY_FILE_006'
+RUN cat > /app/frontend/src/components/Dashboard.jsx << 'CPEOF006'
 import { useState, useEffect } from 'react';
 import ServiceCard from './ServiceCard.jsx';
 import StatsBar from './StatsBar.jsx';
@@ -465,9 +437,9 @@ const s = {
   foot:{fontSize:12,color:'rgba(255,255,255,.16)',fontFamily:"'Inter',sans-serif",letterSpacing:'.5px'},
 };
 
-CLOUDPLAY_FILE_006
+CPEOF006
 
-RUN cat > /app/frontend/src/components/ServiceCard.jsx << 'CLOUDPLAY_FILE_007'
+RUN cat > /app/frontend/src/components/ServiceCard.jsx << 'CPEOF007'
 import { useState, useEffect } from 'react';
 
 const ICONS = { browser:'🌐', desktop:'🖥️', phone:'📱' };
@@ -626,9 +598,9 @@ const s = {
   rimBottom: { position:'absolute', bottom:0, left:0, right:0, height:1, transition:'opacity .3s' },
 };
 
-CLOUDPLAY_FILE_007
+CPEOF007
 
-RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CLOUDPLAY_FILE_008'
+RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CPEOF008'
 import { useState, useCallback } from 'react';
 
 const META = {
@@ -1112,9 +1084,9 @@ const ph = {
   },
 };
 
-CLOUDPLAY_FILE_008
+CPEOF008
 
-RUN cat > /app/frontend/src/components/Toast.jsx << 'CLOUDPLAY_FILE_009'
+RUN cat > /app/frontend/src/components/Toast.jsx << 'CPEOF009'
 import { useEffect, useState } from 'react';
 
 const COLORS = {
@@ -1162,9 +1134,9 @@ const s = {
   msg: { flex:1 },
 };
 
-CLOUDPLAY_FILE_009
+CPEOF009
 
-RUN cat > /app/frontend/src/components/StatsBar.jsx << 'CLOUDPLAY_FILE_010'
+RUN cat > /app/frontend/src/components/StatsBar.jsx << 'CPEOF010'
 import { useState, useEffect } from 'react';
 
 export default function StatsBar() {
@@ -1239,9 +1211,9 @@ const s = {
   dot: { width:6, height:6, borderRadius:'50%', display:'inline-block' },
 };
 
-CLOUDPLAY_FILE_010
+CPEOF010
 
-RUN cat > /app/backend/package.json << 'CLOUDPLAY_FILE_011'
+RUN cat > /app/backend/package.json << 'CPEOF011'
 {
   "name": "cloudplay-backend",
   "version": "1.0.0",
@@ -1257,9 +1229,9 @@ RUN cat > /app/backend/package.json << 'CLOUDPLAY_FILE_011'
   }
 }
 
-CLOUDPLAY_FILE_011
+CPEOF011
 
-RUN cat > /app/backend/sessionManager.js << 'CLOUDPLAY_FILE_012'
+RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
 const { spawn, execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 
@@ -1397,156 +1369,117 @@ function getAllStatus() {
 
 module.exports = { startSession, stopSession, getAllStatus };
 
-CLOUDPLAY_FILE_012
+CPEOF012
 
-RUN cat > /app/backend/server.js << 'CLOUDPLAY_FILE_013'
+RUN cat > /app/backend/server.js << 'CPEOF013'
 const express = require('express');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
 const sessionManager = require('./sessionManager');
-
 const app = express();
 app.use(express.json());
-
 const TOKENS = new Set();
 const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
-
-function auth(req, res, next) {
-  const h = req.headers.authorization;
-  if (!h?.startsWith('Bearer ') || !TOKENS.has(h.split(' ')[1]))
-    return res.status(401).json({ error: 'Unauthorized' });
+function auth(req,res,next){
+  const h=req.headers.authorization;
+  if(!h?.startsWith('Bearer ')||!TOKENS.has(h.split(' ')[1]))
+    return res.status(401).json({error:'Unauthorized'});
   next();
 }
-
-app.post('/api/auth/login', (req, res) => {
-  if (req.body.password !== PASSWORD)
-    return res.status(401).json({ success:false, error:'Невiрний пароль' });
-  const token = crypto.randomUUID();
+app.post('/api/auth/login',(req,res)=>{
+  if(req.body.password!==PASSWORD)
+    return res.status(401).json({success:false,error:'Невiрний пароль'});
+  const token=crypto.randomUUID();
   TOKENS.add(token);
-  setTimeout(() => TOKENS.delete(token), 86400000);
-  res.json({ success:true, token });
+  setTimeout(()=>TOKENS.delete(token),86400000);
+  res.json({success:true,token});
 });
-
-app.post('/api/sessions/start/:type', auth, async (req, res) => {
-  const { type } = req.params;
-  if (!['browser','desktop','phone'].includes(type))
-    return res.status(400).json({ success:false, error:'Bad type' });
-  try {
+app.post('/api/sessions/start/:type',auth,async(req,res)=>{
+  const{type}=req.params;
+  if(!['browser','desktop','phone'].includes(type))
+    return res.status(400).json({success:false,error:'Bad type'});
+  try{
     await sessionManager.startSession(type);
-    res.json({ success:true,
-      vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true` });
-  } catch(err) { res.status(500).json({ success:false, error:err.message }); }
+    res.json({success:true,
+      vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true`});
+  }catch(err){res.status(500).json({success:false,error:err.message});}
 });
-
-app.post('/api/sessions/stop/:type', auth, async (req, res) => {
+app.post('/api/sessions/stop/:type',auth,async(req,res)=>{
   await sessionManager.stopSession(req.params.type);
-  res.json({ success:true });
+  res.json({success:true});
 });
-
-app.get('/api/sessions/status', auth, (req, res) => {
-  res.json(sessionManager.getAllStatus());
+app.get('/api/sessions/status',auth,(req,res)=>res.json(sessionManager.getAllStatus()));
+app.get('/api/stats',auth,(req,res)=>{
+  try{
+    const mem=fs.readFileSync('/proc/meminfo','utf8');
+    const total=parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
+    const avail=parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
+    res.json({memory:{total:Math.round(total),used:Math.round(total-avail)},
+      uptime:Math.floor(process.uptime()),sessions:sessionManager.getAllStatus()});
+  }catch{res.json({memory:{total:0,used:0},uptime:0,sessions:{}});}
 });
-
-app.get('/api/stats', auth, (req, res) => {
-  try {
-    const mem = fs.readFileSync('/proc/meminfo','utf8');
-    const total = parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
-    const avail = parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
-    res.json({ memory:{ total:Math.round(total), used:Math.round(total-avail) },
-      uptime:Math.floor(process.uptime()), sessions:sessionManager.getAllStatus() });
-  } catch { res.json({ memory:{total:0,used:0}, uptime:0, sessions:{} }); }
-});
-
-const ADB = `${process.env.ANDROID_SDK_ROOT||'/opt/android-sdk'}/platform-tools/adb`;
-const KEYS = new Set([3,4,24,25,26,82,84,187]);
-
-app.post('/api/adb/keyevent', auth, (req,res) => {
-  const c = Number(req.body.keycode);
-  if (!KEYS.has(c)) return res.status(400).json({error:'Bad key'});
-  try { execSync(`${ADB} shell input keyevent ${c}`,{timeout:3000}); res.json({success:true}); }
-  catch { res.status(500).json({error:'ADB failed'}); }
-});
-
-app.post('/api/adb/rotate', auth, (req,res) => {
-  const o = Number(req.body.orientation);
-  if (o!==0&&o!==1) return res.status(400).json({error:'Bad orientation'});
-  try {
-    execSync(`${ADB} shell settings put system accelerometer_rotation 0`,{timeout:3000});
-    execSync(`${ADB} shell settings put system user_rotation ${o}`,{timeout:3000});
-    res.json({success:true});
-  } catch { res.status(500).json({error:'ADB failed'}); }
-});
-
 app.get('/api/health',(req,res)=>res.json({status:'ok',version:'1.2'}));
+app.listen(3001,'127.0.0.1',()=>console.log('CloudPlay v1.2 :3001'));
 
-app.listen(3001,'127.0.0.1',()=>console.log('CloudPlay v1.2 API :3001'));
+CPEOF013
 
-CLOUDPLAY_FILE_013
-
-RUN cat > /app/nginx.conf << 'CLOUDPLAY_FILE_090'
+RUN cat > /app/nginx.conf << 'CPEOF014'
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
 events { worker_connections 512; }
 http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    sendfile on;
-    keepalive_timeout 65;
-    gzip on;
-    gzip_types text/plain text/css application/javascript application/json;
-    server {
-        listen 8080;
-        server_name _;
-        location /novnc/ {
-            alias /opt/novnc/;
-            try_files $uri $uri/ =404;
-        }
-        location /websockify/browser {
-            proxy_pass http://127.0.0.1:6901;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_read_timeout 3600s;
-        }
-        location /websockify/desktop {
-            proxy_pass http://127.0.0.1:6902;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_read_timeout 3600s;
-        }
-        location /websockify/phone {
-            proxy_pass http://127.0.0.1:6903;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_read_timeout 3600s;
-        }
-        location /api/ {
-            proxy_pass http://127.0.0.1:3001;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_read_timeout 120s;
-        }
-        location / {
-            root /app/frontend/dist;
-            try_files $uri $uri/ /index.html;
-        }
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  sendfile on; keepalive_timeout 65;
+  gzip on; gzip_types text/plain text/css application/javascript application/json;
+  server {
+    listen 8080; server_name _;
+    location /novnc/ { alias /opt/novnc/; try_files $uri $uri/ =404; }
+    location /websockify/browser {
+      proxy_pass http://127.0.0.1:6901;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_read_timeout 3600s;
     }
+    location /websockify/desktop {
+      proxy_pass http://127.0.0.1:6902;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_read_timeout 3600s;
+    }
+    location /websockify/phone {
+      proxy_pass http://127.0.0.1:6903;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_read_timeout 3600s;
+    }
+    location /api/ {
+      proxy_pass http://127.0.0.1:3001;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_read_timeout 120s;
+    }
+    location / {
+      root /app/frontend/dist;
+      try_files $uri $uri/ /index.html;
+    }
+  }
 }
 
-CLOUDPLAY_FILE_090
+CPEOF014
 
-RUN cat > /app/supervisord.conf << 'CLOUDPLAY_FILE_091'
+RUN cat > /app/supervisord.conf << 'CPEOF015'
 [supervisord]
 nodaemon=true
 logfile=/var/log/supervisor/supervisord.log
 pidfile=/var/run/supervisord.pid
 loglevel=info
 user=root
-
 [program:nginx]
 command=/usr/sbin/nginx -g "daemon off;" -c /app/nginx.conf
 autostart=true
@@ -1554,7 +1487,6 @@ autorestart=true
 priority=10
 stdout_logfile=/var/log/supervisor/nginx.log
 stderr_logfile=/var/log/supervisor/nginx.err.log
-
 [program:backend]
 command=node /app/backend/server.js
 directory=/app/backend
@@ -1565,16 +1497,13 @@ environment=NODE_ENV="production",API_PORT="3001",CLOUDPLAY_PASSWORD="%(ENV_CLOU
 stdout_logfile=/var/log/supervisor/backend.log
 stderr_logfile=/var/log/supervisor/backend.err.log
 
-CLOUDPLAY_FILE_091
+CPEOF015
 
-# ── 6. Встановлення залежностей ─────────────────────────────────
+# Залежності backend
 RUN cd /app/backend && npm install --production
 
-RUN cd /app/frontend && npm install
+# Залежності + білд frontend
+RUN cd /app/frontend && npm install && npm run build
 
-# ── 7. Білд фронтенду ────────────────────────────────────────────
-RUN cd /app/frontend && npm run build
-
-# ── 8. Запуск ────────────────────────────────────────────────────
 EXPOSE 8080
 CMD ["/usr/bin/supervisord", "-n", "-c", "/app/supervisord.conf"]
