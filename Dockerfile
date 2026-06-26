@@ -1,12 +1,10 @@
 FROM ubuntu:22.04
-# CloudPlay v1.2 — ONE FILE, все всередині
-LABEL maintainer="CloudPlay"
+LABEL maintainer="CloudPlay v1.2-fix"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# 1. Пакети
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
-    openbox xfce4 xfce4-terminal \
+    openbox xfce4 xfce4-terminal xterm \
     chromium-browser \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
@@ -14,20 +12,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 3. noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
 
-# 4. Директорії
 RUN mkdir -p /app/frontend/src/components /app/backend \
-    && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx \
+    && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx /tmp/xdg \
     && mkdir -p /root/.config/openbox /root/.config/xfce4 \
     && rm -f /etc/nginx/sites-enabled/default
 
@@ -601,487 +596,182 @@ const s = {
 CPEOF007
 
 RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CPEOF008'
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const META = {
-  browser: { icon: '🌐', name: 'Cloud Browser', sub: 'Chromium' },
-  desktop: { icon: '🖥️', name: 'Cloud PC',      sub: 'Ubuntu XFCE' },
-  phone:   { icon: '📱', name: 'Cloud Phone',   sub: 'Android 11' },
+  browser: { icon:'🌐', name:'Cloud Browser', sub:'Chromium', boot:25 },
+  desktop: { icon:'🖥️', name:'Cloud PC',      sub:'Ubuntu XFCE', boot:35 },
+  phone:   { icon:'📱', name:'Cloud Phone',   sub:'Android 11', boot:20 },
 };
 
-// ── ADB helper ───────────────────────────────────────────────────
-async function adbKey(keycode) {
-  try {
-    await fetch('/api/adb/keyevent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keycode }),
-    });
-  } catch {}
+async function adbKey(keycode){
+  try{ await fetch('/api/adb/keyevent',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({keycode})}); }catch{}
 }
 
-async function adbRotate(orientation) {
-  try {
-    await fetch('/api/adb/rotate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orientation }),
-    });
-  } catch {}
-}
+export default function SessionViewer({ type, url, onBack }){
+  const [loaded, setLoaded]     = useState(false);
+  const [countdown, setCountdown] = useState(META[type]?.boot || 25);
+  const [retries, setRetries]   = useState(0);
+  const iframeRef               = useRef(null);
+  const meta                    = META[type] || META.browser;
 
-// ── Phone Frame ──────────────────────────────────────────────────
-function PhoneFrame({ url, loaded, onLoad }) {
-  const [landscape, setLandscape] = useState(false);
-  const [volVisible, setVolVisible] = useState(false);
+  // Countdown timer
+  useEffect(()=>{
+    if(loaded) return;
+    const id = setInterval(()=>{
+      setCountdown(c=> c > 0 ? c-1 : 0);
+    },1000);
+    return ()=>clearInterval(id);
+  },[loaded]);
 
-  const handleRotate = async () => {
-    const next = !landscape;
-    setLandscape(next);
-    await adbRotate(next ? 1 : 0);
+  const handleLoad = useCallback(()=> setLoaded(true),[]);
+
+  const handleRetry = ()=>{
+    setLoaded(false);
+    setCountdown(META[type]?.boot || 25);
+    setRetries(r=>r+1);
+    if(iframeRef.current){
+      const src = iframeRef.current.src;
+      iframeRef.current.src = '';
+      setTimeout(()=>{ if(iframeRef.current) iframeRef.current.src = src; },300);
+    }
   };
 
-  const W = landscape ? 720 : 340;
-  const H = landscape ? 340 : 720;
+  const openFullscreen = ()=>{
+    if(iframeRef.current?.requestFullscreen) iframeRef.current.requestFullscreen();
+    else if(url) window.open(url,'_blank');
+  };
 
-  return (
-    <div style={ph.wrapper}>
-      {/* Controls left panel */}
-      <div style={ph.leftPanel}>
-        <ControlBtn icon="🔊" title="Гучніше" onClick={() => adbKey(24)} />
-        <ControlBtn icon="🔉" title="Тихіше" onClick={() => adbKey(25)} />
-        <div style={{ height: 16 }} />
-        <ControlBtn icon="⏻" title="Живлення" onClick={() => adbKey(26)} />
-        <div style={{ height: 16 }} />
-        <ControlBtn icon={landscape ? '📱' : '🔄'} title="Повернути" onClick={handleRotate} />
-      </div>
-
-      {/* Phone device */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
-        <div style={{
-          ...ph.device,
-          width: W,
-          height: H,
-          transition: 'width 0.4s ease, height 0.4s ease',
-        }}>
-          {/* Side power button */}
-          <div style={{
-            ...ph.sideBtn,
-            right: -5,
-            top: landscape ? '35%' : '22%',
-            height: landscape ? 40 : 60,
-          }} />
-          {/* Side vol buttons */}
-          <div style={{
-            ...ph.sideBtn,
-            left: -5,
-            top: landscape ? '28%' : '18%',
-            height: landscape ? 28 : 42,
-          }} />
-          <div style={{
-            ...ph.sideBtn,
-            left: -5,
-            top: landscape ? '48%' : '26%',
-            height: landscape ? 28 : 42,
-          }} />
-
-          {/* Punch-hole camera */}
-          {!landscape && (
-            <div style={ph.camera} />
-          )}
-          {landscape && (
-            <div style={{ ...ph.camera, top: '50%', left: 22, transform: 'translateY(-50%)' }} />
-          )}
-
-          {/* Screen */}
-          <div style={ph.screen}>
-            {!loaded && (
-              <div style={ph.bootScreen}>
-                <div style={ph.androidLogo}>🤖</div>
-                <div style={ph.bootSpinner} />
-                <p style={ph.bootText}>Android завантажується...</p>
-                <p style={ph.bootSub}>Перший запуск займає 30-60 секунд</p>
-                <div style={ph.bootBar}>
-                  <div style={ph.bootBarFill} />
-                </div>
-              </div>
-            )}
-            {url && (
-              <iframe
-                src={url}
-                style={{
-                  ...ph.iframe,
-                  opacity: loaded ? 1 : 0,
-                }}
-                onLoad={onLoad}
-                title="Android Phone"
-              />
-            )}
-          </div>
-
-          {/* Android gesture bar */}
-          <div style={ph.gestureBar} />
-        </div>
-
-        {/* Hardware nav buttons */}
-        <div style={ph.navbar}>
-          <NavBtn icon="◁" label="Назад" onClick={() => adbKey(4)} />
-          <NavBtn icon="⬤" label="Додому" onClick={() => adbKey(3)} primary />
-          <NavBtn icon="▣" label="Додатки" onClick={() => adbKey(187)} />
-        </div>
-      </div>
-
-      {/* Controls right panel */}
-      <div style={ph.rightPanel}>
-        <ControlBtn icon="📸" title="Знімок" onClick={() => adbKey(26)} />
-        <div style={{ height: 16 }} />
-        <ControlBtn icon="🔒" title="Заблокувати" onClick={() => adbKey(26)} />
-        <div style={{ height: 16 }} />
-        <ControlBtn icon="🔍" title="Пошук" onClick={() => adbKey(84)} />
-        <div style={{ height: 16 }} />
-        <ControlBtn icon="📋" title="Меню" onClick={() => adbKey(82)} />
-      </div>
-
-      <style>{`
-        @keyframes bootSpin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes bootFill {
-          0% { width: 0%; }
-          20% { width: 30%; }
-          50% { width: 60%; }
-          80% { width: 85%; }
-          100% { width: 95%; }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-function ControlBtn({ icon, title, onClick }) {
-  const [pressed, setPressed] = useState(false);
-  return (
-    <button
-      title={title}
-      style={{
-        ...ph.ctrlBtn,
-        background: pressed ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
-        transform: pressed ? 'scale(0.9)' : 'scale(1)',
-      }}
-      onMouseDown={() => setPressed(true)}
-      onMouseUp={() => { setPressed(false); onClick(); }}
-      onMouseLeave={() => setPressed(false)}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function NavBtn({ icon, label, onClick, primary }) {
-  const [pressed, setPressed] = useState(false);
-  return (
-    <button
-      title={label}
-      style={{
-        ...ph.navBtn,
-        background: pressed
-          ? 'rgba(255,255,255,0.18)'
-          : primary
-            ? 'rgba(255,255,255,0.10)'
-            : 'rgba(255,255,255,0.05)',
-        transform: pressed ? 'scale(0.88)' : 'scale(1)',
-        border: primary
-          ? '1px solid rgba(255,255,255,0.2)'
-          : '1px solid rgba(255,255,255,0.08)',
-      }}
-      onMouseDown={() => setPressed(true)}
-      onMouseUp={() => { setPressed(false); onClick(); }}
-      onMouseLeave={() => setPressed(false)}
-    >
-      <span style={{ fontSize: primary ? 20 : 16 }}>{icon}</span>
-      <span style={ph.navLabel}>{label}</span>
-    </button>
-  );
-}
-
-// ── Main Viewer ───────────────────────────────────────────────────
-export default function SessionViewer({ type, url, onBack }) {
-  const [loaded, setLoaded] = useState(false);
-  const meta = META[type] || META.browser;
-  const isPhone = type === 'phone';
-
-  const handleLoad = useCallback(() => setLoaded(true), []);
+  // noVNC URL з кращими параметрами
+  const vncUrl = url
+    ? `${url}&resize=scale&quality=6&compression=2&reconnect_delay=3000&bell=0`
+    : null;
 
   return (
     <div style={s.root}>
       {/* Toolbar */}
-      <div style={s.toolbar}>
+      <div style={s.bar}>
         <button style={s.backBtn} onClick={onBack}>← Назад</button>
-        <div style={s.sessionInfo}>
-          <span style={{ fontSize: 20 }}>{meta.icon}</span>
+        <div style={s.info}>
+          <span style={{fontSize:20}}>{meta.icon}</span>
           <div>
-            <div style={s.sessionName}>{meta.name}</div>
-            <div style={s.sessionSub}>{meta.sub}</div>
+            <div style={s.name}>{meta.name}</div>
+            <div style={s.sub}>{meta.sub}</div>
           </div>
         </div>
-        <div style={s.statusPill}>
-          <span style={s.dot} />
-          {loaded ? 'Активна' : 'Завантаження...'}
+        <div style={{...s.status, color: loaded?'#10b981':'#f59e0b'}}>
+          <span style={{...s.dot, background:loaded?'#10b981':'#f59e0b',
+            boxShadow:`0 0 6px ${loaded?'#10b981':'#f59e0b'}`}}/>
+          {loaded ? 'Активна' : 'Запуск...'}
         </div>
-        {!isPhone && (
-          <button
-            style={s.fsBtn}
-            title="Повний екран"
-            onClick={() => {
-              document.querySelector('iframe')?.requestFullscreen?.();
-            }}
-          >⛶</button>
-        )}
+        <button style={s.iconBtn} onClick={handleRetry} title="Перезапустити">↺</button>
+        <button style={s.iconBtn} onClick={openFullscreen} title="Повний екран">⛶</button>
       </div>
 
       {/* Content */}
       <div style={s.content}>
-        {isPhone ? (
-          <PhoneFrame url={url} loaded={loaded} onLoad={handleLoad} />
-        ) : (
-          <div style={s.frameWrap}>
-            {!loaded && (
-              <div style={s.loadScreen}>
-                <div style={s.spinner} />
-                <p style={s.loadText}>Запускаємо сесію...</p>
-                <p style={s.loadSub}>10–25 секунд</p>
+        {/* Loading overlay */}
+        {!loaded && (
+          <div style={s.overlay}>
+            <div style={s.card}>
+              <div style={{fontSize:52}}>{meta.icon}</div>
+              <div style={s.spinner}/>
+              <p style={s.loadTitle}>Запускаємо {meta.name}...</p>
+              {countdown > 0 ? (
+                <div style={s.countWrap}>
+                  <div style={s.countNum}>{countdown}</div>
+                  <div style={s.countLabel}>секунд</div>
+                </div>
+              ) : (
+                <p style={s.countLabel}>Майже готово...</p>
+              )}
+              <div style={s.progressBar}>
+                <div style={{
+                  ...s.progressFill,
+                  width: `${Math.max(5, 100 - (countdown/(meta.boot||25))*100)}%`,
+                }}/>
               </div>
-            )}
-            {url && (
-              <iframe
-                src={url}
-                style={{ ...s.frame, opacity: loaded ? 1 : 0 }}
-                onLoad={handleLoad}
-                title={meta.name}
-                allow="clipboard-read; clipboard-write"
-              />
-            )}
+              <p style={s.hint}>
+                {retries === 0
+                  ? 'Якщо екран чорний після завантаження — натисни ↺ вгорі'
+                  : `Спроба ${retries+1}...`}
+              </p>
+              <button style={s.retryBtn} onClick={handleRetry}>
+                ↺ Перезапустити з'єднання
+              </button>
+            </div>
           </div>
+        )}
+
+        {/* noVNC iframe */}
+        {vncUrl && (
+          <iframe
+            ref={iframeRef}
+            key={retries}
+            src={vncUrl}
+            style={{...s.frame, opacity: loaded ? 1 : 0}}
+            onLoad={handleLoad}
+            allow="clipboard-read; clipboard-write; fullscreen"
+            title={meta.name}
+          />
         )}
       </div>
 
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes dotPulse {
-          0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.5);}
-          50%{box-shadow:0 0 0 5px rgba(16,185,129,0);}
-        }
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+        @keyframes fadeIn{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
       `}</style>
     </div>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────
 const s = {
-  root: {
-    display: 'flex', flexDirection: 'column',
-    height: '100vh', background: '#06060f',
-    fontFamily: "'Space Grotesk', sans-serif", color: '#fff',
-  },
-  toolbar: {
-    display: 'flex', alignItems: 'center', gap: 12,
-    padding: '10px 20px',
-    background: 'rgba(255,255,255,0.03)',
-    borderBottom: '1px solid rgba(255,255,255,0.07)',
-    flexShrink: 0,
-  },
-  backBtn: {
-    background: 'rgba(255,255,255,0.07)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    color: '#fff', padding: '7px 14px',
-    borderRadius: 8, cursor: 'pointer',
-    fontSize: 13, fontFamily: "'Space Grotesk', sans-serif",
-  },
-  sessionInfo: {
-    flex: 1, display: 'flex', alignItems: 'center', gap: 10,
-  },
-  sessionName: { fontSize: 14, fontWeight: 600 },
-  sessionSub: {
-    fontSize: 11, color: 'rgba(255,255,255,0.35)',
-    fontFamily: "'Inter', sans-serif",
-  },
-  statusPill: {
-    display: 'flex', alignItems: 'center', gap: 7,
-    fontSize: 12, color: 'rgba(255,255,255,0.45)',
-    fontFamily: "'Inter', sans-serif",
-  },
-  dot: {
-    display: 'inline-block', width: 8, height: 8,
-    background: '#10b981', borderRadius: '50%',
-    animation: 'dotPulse 2.5s ease-in-out infinite',
-  },
-  fsBtn: {
-    background: 'rgba(255,255,255,0.07)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    color: '#fff', width: 34, height: 34,
-    borderRadius: 8, cursor: 'pointer', fontSize: 16,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  content: {
-    flex: 1, position: 'relative', overflow: 'auto',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: 'radial-gradient(ellipse at center, #0d0d20 0%, #06060f 100%)',
-  },
-  frameWrap: { position: 'absolute', inset: 0 },
-  frame: {
-    position: 'absolute', inset: 0,
-    width: '100%', height: '100%',
-    border: 'none', transition: 'opacity 0.4s ease',
-  },
-  loadScreen: {
-    position: 'absolute', inset: 0,
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center', gap: 16,
-  },
-  spinner: {
-    width: 48, height: 48,
-    border: '3px solid rgba(255,255,255,0.08)',
-    borderTopColor: '#818cf8', borderRadius: '50%',
-    animation: 'spin 0.9s linear infinite',
-  },
-  loadText: { fontSize: 18, fontWeight: 600, color: 'rgba(255,255,255,0.8)' },
-  loadSub: { fontSize: 13, color: 'rgba(255,255,255,0.28)', fontFamily: "'Inter',sans-serif" },
-};
-
-const ph = {
-  wrapper: {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    gap: 32, padding: 24,
-  },
-  leftPanel: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-  },
-  rightPanel: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-  },
-  device: {
-    background: 'linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
-    borderRadius: 48,
-    border: '3px solid rgba(255,255,255,0.09)',
-    boxShadow: `
-      0 0 0 6px #0c0c1a,
-      0 60px 120px rgba(0,0,0,0.7),
-      inset 0 0 50px rgba(255,255,255,0.02),
-      inset 0 1px 0 rgba(255,255,255,0.08)
-    `,
-    position: 'relative',
-    overflow: 'hidden',
-    flexShrink: 0,
-  },
-  sideBtn: {
-    position: 'absolute',
-    width: 4,
-    background: 'linear-gradient(to bottom, #2a2a3e, #1a1a2e)',
-    borderRadius: 4,
-    boxShadow: '0 0 0 1px rgba(255,255,255,0.06)',
-  },
-  camera: {
-    position: 'absolute',
-    top: 18, left: '50%',
-    transform: 'translateX(-50%)',
-    width: 12, height: 12,
-    background: '#0c0c1a',
-    borderRadius: '50%',
-    border: '2px solid rgba(255,255,255,0.06)',
-    zIndex: 10,
-    boxShadow: 'inset 0 0 4px rgba(100,149,237,0.3)',
-  },
-  screen: {
-    position: 'absolute',
-    inset: 0,
-    background: '#000',
-    overflow: 'hidden',
-  },
-  iframe: {
-    position: 'absolute', inset: 0,
-    width: '100%', height: '100%',
-    border: 'none',
-    transition: 'opacity 0.5s ease',
-  },
-  gestureBar: {
-    position: 'absolute',
-    bottom: 10, left: '50%',
-    transform: 'translateX(-50%)',
-    width: 100, height: 4,
-    background: 'rgba(255,255,255,0.25)',
-    borderRadius: 3, zIndex: 10,
-  },
-  bootScreen: {
-    position: 'absolute', inset: 0, zIndex: 5,
-    background: 'linear-gradient(160deg, #0a0a1e, #1a0a2e)',
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center',
-    gap: 14, padding: 24,
-  },
-  androidLogo: { fontSize: 52, filter: 'drop-shadow(0 0 20px rgba(61,220,132,0.5))' },
-  bootSpinner: {
-    width: 36, height: 36,
-    border: '3px solid rgba(61,220,132,0.2)',
-    borderTopColor: '#3ddc84',
-    borderRadius: '50%',
-    animation: 'bootSpin 1s linear infinite',
-  },
-  bootText: {
-    fontSize: 14, fontWeight: 600,
-    color: 'rgba(255,255,255,0.8)',
-    fontFamily: "'Space Grotesk', sans-serif",
-  },
-  bootSub: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.35)',
-    textAlign: 'center',
-    fontFamily: "'Inter', sans-serif",
-  },
-  bootBar: {
-    width: '80%', height: 3,
-    background: 'rgba(255,255,255,0.08)',
-    borderRadius: 2, overflow: 'hidden',
-  },
-  bootBarFill: {
-    height: '100%',
-    background: 'linear-gradient(90deg, #3ddc84, #06b6d4)',
-    borderRadius: 2,
-    animation: 'bootFill 45s ease-out forwards',
-  },
-  navbar: {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    gap: 8, marginTop: 0,
-    background: 'rgba(255,255,255,0.03)',
-    border: '1px solid rgba(255,255,255,0.07)',
-    borderTop: 'none',
-    borderRadius: '0 0 16px 16px',
-    padding: '10px 16px',
-    width: '100%',
-  },
-  navBtn: {
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center',
-    gap: 4, flex: 1,
-    padding: '10px 4px',
-    borderRadius: 12,
-    cursor: 'pointer', color: '#fff',
-    transition: 'all 0.15s ease',
-    fontFamily: "'Space Grotesk', sans-serif",
-  },
-  navLabel: {
-    fontSize: 9, color: 'rgba(255,255,255,0.4)',
-    fontFamily: "'Inter', sans-serif",
-    letterSpacing: '0.5px',
-  },
-  ctrlBtn: {
-    width: 44, height: 44,
-    borderRadius: 12,
-    border: '1px solid rgba(255,255,255,0.09)',
-    color: '#fff', cursor: 'pointer',
-    fontSize: 18, transition: 'all 0.15s ease',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontFamily: 'inherit',
-  },
+  root:{ display:'flex', flexDirection:'column', height:'100vh',
+    background:'#030308', fontFamily:"'Space Grotesk',sans-serif", color:'#fff' },
+  bar:{ display:'flex', alignItems:'center', gap:10, padding:'10px 16px',
+    background:'rgba(255,255,255,.04)', borderBottom:'1px solid rgba(255,255,255,.07)',
+    flexShrink:0 },
+  backBtn:{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)',
+    color:'#fff', padding:'7px 14px', borderRadius:8, cursor:'pointer',
+    fontSize:13, fontFamily:"'Space Grotesk',sans-serif", flexShrink:0 },
+  info:{ flex:1, display:'flex', alignItems:'center', gap:10 },
+  name:{ fontSize:14, fontWeight:600 },
+  sub:{ fontSize:11, color:'rgba(255,255,255,.35)', fontFamily:"'Inter',sans-serif" },
+  status:{ display:'flex', alignItems:'center', gap:6, fontSize:12,
+    fontFamily:"'Inter',sans-serif", flexShrink:0 },
+  dot:{ display:'inline-block', width:8, height:8, borderRadius:'50%' },
+  iconBtn:{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)',
+    color:'#fff', width:34, height:34, borderRadius:8, cursor:'pointer', fontSize:15,
+    display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 },
+  content:{ flex:1, position:'relative', overflow:'hidden' },
+  overlay:{ position:'absolute', inset:0, zIndex:10, background:'#030308',
+    display:'flex', alignItems:'center', justifyContent:'center' },
+  card:{ display:'flex', flexDirection:'column', alignItems:'center', gap:16,
+    padding:'40px 32px', background:'rgba(255,255,255,.04)',
+    border:'1px solid rgba(255,255,255,.09)', borderRadius:24,
+    animation:'fadeIn .4s ease', maxWidth:320, width:'90%', textAlign:'center' },
+  spinner:{ width:44, height:44, border:'3px solid rgba(255,255,255,.08)',
+    borderTopColor:'#818cf8', borderRadius:'50%', animation:'spin .9s linear infinite' },
+  loadTitle:{ fontSize:17, fontWeight:600, color:'rgba(255,255,255,.85)' },
+  countWrap:{ display:'flex', flexDirection:'column', alignItems:'center', gap:4 },
+  countNum:{ fontSize:48, fontWeight:700, color:'#818cf8', lineHeight:1,
+    fontVariantNumeric:'tabular-nums' },
+  countLabel:{ fontSize:12, color:'rgba(255,255,255,.35)',
+    fontFamily:"'Inter',sans-serif" },
+  progressBar:{ width:'100%', height:4, background:'rgba(255,255,255,.08)',
+    borderRadius:2, overflow:'hidden' },
+  progressFill:{ height:'100%',
+    background:'linear-gradient(90deg,#4f46e5,#818cf8)',
+    borderRadius:2, transition:'width 1s linear' },
+  hint:{ fontSize:12, color:'rgba(255,255,255,.3)',
+    fontFamily:"'Inter',sans-serif", lineHeight:1.5 },
+  retryBtn:{ background:'rgba(129,140,248,.15)', border:'1px solid rgba(129,140,248,.3)',
+    color:'#818cf8', padding:'9px 20px', borderRadius:10, cursor:'pointer',
+    fontSize:13, fontWeight:600, fontFamily:"'Space Grotesk',sans-serif" },
+  frame:{ position:'absolute', inset:0, width:'100%', height:'100%',
+    border:'none', transition:'opacity .5s ease' },
 };
 
 CPEOF008
@@ -1232,137 +922,128 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
 CPEOF011
 
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 
-const ANDROID_SDK = process.env.ANDROID_SDK_ROOT || '/opt/android-sdk';
-
 const CONFIGS = {
-  browser: { display: ':1', vncPort: 5901, wsPort: 6901, res: '1920x1080x24' },
-  desktop: { display: ':2', vncPort: 5902, wsPort: 6902, res: '1920x1080x24' },
-  phone:   { display: ':3', vncPort: 5903, wsPort: 6903, res: '1080x2340x24' },
+  browser: { display:':1', vncPort:5901, wsPort:6901, res:'1920x1080x24' },
+  desktop: { display:':2', vncPort:5902, wsPort:6902, res:'1920x1080x24' },
+  phone:   { display:':3', vncPort:5903, wsPort:6903, res:'1080x1920x24' },
 };
+const sessions = { browser:null, desktop:null, phone:null };
 
-const sessions = { browser: null, desktop: null, phone: null };
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function spawnProc(cmd, args, env = {}) {
+function spawnProc(cmd, args, env={}){
   const proc = spawn(cmd, args, {
-    env: { ...process.env, ...env },
-    stdio: 'ignore',
-    detached: false,
+    env:{ ...process.env, ...env },
+    stdio:'ignore', detached:false,
   });
-  proc.on('error', err => console.error(`[${cmd}] error:`, err.message));
+  proc.on('error', err=>console.error(`[${cmd}] ERR:`,err.message));
   return proc;
 }
 
-async function startSession(type) {
-  if (sessions[type]) await stopSession(type);
+async function startSession(type){
+  if(sessions[type]) await stopSession(type);
   const cfg = CONFIGS[type];
-  if (!cfg) throw new Error('Unknown type');
+  if(!cfg) throw new Error('Unknown type');
 
   console.log(`\n▶ Starting [${type}] on ${cfg.display}...`);
   const procs = {};
 
-  // ── 1. Xvfb ─────────────────────────────────────────────────
+  // ── Xvfb ─────────────────────────────────────────────────────
   procs.xvfb = spawnProc('Xvfb', [
     cfg.display,
-    '-screen', '0', cfg.res,
-    '-ac', '-nolisten', 'tcp', '-noreset',
+    '-screen','0', cfg.res,
+    '-ac', '-nolisten','tcp', '-noreset', '-dpi','96',
   ]);
-  await sleep(1200);
+  await sleep(1500);
 
-  // ── 2. WM + App ──────────────────────────────────────────────
-  if (type === 'browser') {
-    procs.wm = spawnProc('openbox', [], { DISPLAY: cfg.display });
-    await sleep(600);
-    procs.app = spawnProc('chromium-browser', [
-      '--no-sandbox', '--disable-dev-shm-usage',
-      '--disable-gpu', '--start-maximized',
-      'https://www.google.com',
-    ], { DISPLAY: cfg.display });
-
-  } else if (type === 'desktop') {
-    procs.wm = spawnProc('bash', ['-c', 'startxfce4'], {
-      DISPLAY: cfg.display,
-      DBUS_SESSION_BUS_ADDRESS: '/dev/null',
-      HOME: '/root',
-    });
-
-  } else if (type === 'phone') {
-    // Openbox як WM для emulator вікна
-    procs.wm = spawnProc('openbox', ['--config-file', '/dev/null'], {
-      DISPLAY: cfg.display,
-    });
+  // ── WM + App ──────────────────────────────────────────────────
+  if(type === 'browser'){
+    // Openbox без зайвих флагів
+    procs.wm = spawnProc('openbox', [], { DISPLAY:cfg.display, HOME:'/root' });
     await sleep(800);
 
-    // Android emulator з swiftshader (БЕЗ KVM)
-    procs.app = spawnProc(
-      `${ANDROID_SDK}/emulator/emulator`,
-      [
-        '-avd', 'CloudPhone',
-        '-no-audio',
-        '-no-boot-anim',
-        '-gpu', 'swiftshader_indirect',
-        '-no-accel',             // не потребує KVM!
-        '-screen', 'multi-touch',
-        '-memory', '2048',
-        '-cores', '2',
-        '-camera-back', 'none',
-        '-camera-front', 'none',
-        '-dns-server', '8.8.8.8',
-      ],
-      {
-        DISPLAY: cfg.display,
-        ANDROID_SDK_ROOT: ANDROID_SDK,
-        ANDROID_AVD_HOME: '/root/.android/avd',
-        ANDROID_EMULATOR_HOME: '/root/.android',
-        ANDROID_EMULATOR_USE_SYSTEM_LIBS: '1',
-        LD_LIBRARY_PATH: `${ANDROID_SDK}/emulator/lib64/qt/lib:${ANDROID_SDK}/emulator/lib64`,
-        HOME: '/root',
-      }
-    );
+    // Chromium з swiftshader — ОБОВ'ЯЗКОВО для рендерингу в контейнері
+    procs.app = spawnProc('chromium-browser', [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu-sandbox',
+      '--use-gl=swiftshader',        // <- ключовий фікс чорного екрану
+      '--disable-software-rasterizer=false',
+      '--ignore-gpu-blocklist',
+      '--window-size=1920,1080',
+      '--start-maximized',
+      '--new-window',
+      'https://www.google.com',
+    ], { DISPLAY:cfg.display, HOME:'/root' });
 
-    console.log('[phone] Emulator starting (30-60s на завантаження Android)...');
+  } else if(type === 'desktop'){
+    // Запускаємо dbus + XFCE правильно
+    procs.dbus = spawnProc('bash',['-c',
+      'mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'
+    ],{});
+    await sleep(500);
+
+    procs.wm = spawnProc('bash',['-c','startxfce4'],{
+      DISPLAY: cfg.display,
+      HOME:    '/root',
+      DBUS_SESSION_BUS_ADDRESS: 'autolaunch:',
+      XDG_RUNTIME_DIR: '/tmp/xdg',
+      XDG_CONFIG_HOME: '/root/.config',
+    });
+
+  } else if(type === 'phone'){
+    // Openbox БЕЗ --config-file /dev/null (це ламало все)
+    procs.wm = spawnProc('openbox', [], { DISPLAY:cfg.display, HOME:'/root' });
+    await sleep(600);
+    // xterm як заглушка (Android SDK не встановлено)
+    procs.app = spawnProc('xterm',[
+      '-geometry','80x24+100+100',
+      '-title','CloudPlay Phone (coming soon)',
+      '-e','echo "Android емулятор буде доступний у наступній версії." && sleep 9999'
+    ],{ DISPLAY:cfg.display });
   }
 
-  await sleep(type === 'phone' ? 5000 : 2500);
+  // Чекаємо щоб додаток встиг запуститись
+  await sleep(type === 'desktop' ? 4000 : 2500);
 
-  // ── 3. x11vnc ────────────────────────────────────────────────
-  procs.vnc = spawnProc('x11vnc', [
+  // ── x11vnc ────────────────────────────────────────────────────
+  procs.vnc = spawnProc('x11vnc',[
     '-display', cfg.display,
-    '-forever', '-nopw', '-quiet', '-shared',
+    '-forever','-nopw','-quiet','-shared',
     '-rfbport', String(cfg.vncPort),
+    '-wait','20',
+    '-defer','10',
   ]);
-  await sleep(800);
+  await sleep(1000);
 
-  // ── 4. websockify ────────────────────────────────────────────
-  procs.ws = spawnProc('websockify', [
+  // ── websockify ────────────────────────────────────────────────
+  procs.ws = spawnProc('websockify',[
     String(cfg.wsPort),
     `localhost:${cfg.vncPort}`,
   ]);
-  await sleep(400);
+  await sleep(500);
 
-  sessions[type] = { id: uuidv4(), type, procs, startTime: new Date() };
+  sessions[type] = { id:uuidv4(), type, procs, startTime:new Date() };
   console.log(`✅ [${type}] ready. VNC:${cfg.vncPort} WS:${cfg.wsPort}`);
   return sessions[type];
 }
 
-async function stopSession(type) {
+async function stopSession(type){
   const s = sessions[type];
-  if (!s) return;
-  console.log(`⏹ Stopping [${type}]...`);
-  for (const proc of Object.values(s.procs).reverse()) {
-    try { if (proc && !proc.killed) proc.kill('SIGTERM'); } catch {}
+  if(!s) return;
+  for(const proc of Object.values(s.procs).reverse()){
+    try{ if(proc&&!proc.killed) proc.kill('SIGTERM'); }catch{}
   }
   sessions[type] = null;
 }
 
-function getAllStatus() {
-  const out = {};
-  for (const [type, s] of Object.entries(sessions)) {
-    out[type] = s ? { running: true, id: s.id, startTime: s.startTime } : { running: false };
+function getAllStatus(){
+  const out={};
+  for(const [type,s] of Object.entries(sessions)){
+    out[type] = s ? {running:true,id:s.id,startTime:s.startTime} : {running:false};
   }
   return out;
 }
@@ -1374,53 +1055,92 @@ CPEOF012
 RUN cat > /app/backend/server.js << 'CPEOF013'
 const express = require('express');
 const { execSync } = require('child_process');
-const fs = require('fs');
-const crypto = require('crypto');
 const sessionManager = require('./sessionManager');
+
 const app = express();
 app.use(express.json());
-const TOKENS = new Set();
-const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
-function auth(req,res,next){
-  const h=req.headers.authorization;
-  if(!h?.startsWith('Bearer ')||!TOKENS.has(h.split(' ')[1]))
-    return res.status(401).json({error:'Unauthorized'});
-  next();
-}
-app.post('/api/auth/login',(req,res)=>{
-  if(req.body.password!==PASSWORD)
-    return res.status(401).json({success:false,error:'Невiрний пароль'});
-  const token=crypto.randomUUID();
-  TOKENS.add(token);
-  setTimeout(()=>TOKENS.delete(token),86400000);
-  res.json({success:true,token});
-});
-app.post('/api/sessions/start/:type',auth,async(req,res)=>{
-  const{type}=req.params;
-  if(!['browser','desktop','phone'].includes(type))
-    return res.status(400).json({success:false,error:'Bad type'});
-  try{
+
+// ── Sessions ─────────────────────────────────────────────────────
+
+app.post('/api/sessions/start/:type', async (req, res) => {
+  const { type } = req.params;
+  if (!['browser', 'desktop', 'phone'].includes(type)) {
+    return res.status(400).json({ success: false, error: 'Невідомий тип' });
+  }
+  try {
     await sessionManager.startSession(type);
-    res.json({success:true,
-      vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true`});
-  }catch(err){res.status(500).json({success:false,error:err.message});}
+    res.json({
+      success: true,
+      vncUrl: `/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true`,
+    });
+  } catch (err) {
+    console.error(`Start [${type}] failed:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
-app.post('/api/sessions/stop/:type',auth,async(req,res)=>{
+
+app.post('/api/sessions/stop/:type', async (req, res) => {
   await sessionManager.stopSession(req.params.type);
-  res.json({success:true});
+  res.json({ success: true });
 });
-app.get('/api/sessions/status',auth,(req,res)=>res.json(sessionManager.getAllStatus()));
-app.get('/api/stats',auth,(req,res)=>{
-  try{
-    const mem=fs.readFileSync('/proc/meminfo','utf8');
-    const total=parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
-    const avail=parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
-    res.json({memory:{total:Math.round(total),used:Math.round(total-avail)},
-      uptime:Math.floor(process.uptime()),sessions:sessionManager.getAllStatus()});
-  }catch{res.json({memory:{total:0,used:0},uptime:0,sessions:{}});}
+
+app.get('/api/sessions/status', (req, res) => {
+  res.json(sessionManager.getAllStatus());
 });
-app.get('/api/health',(req,res)=>res.json({status:'ok',version:'1.2'}));
-app.listen(3001,'127.0.0.1',()=>console.log('CloudPlay v1.2 :3001'));
+
+// ── ADB Controls (для телефону) ───────────────────────────────────
+
+// Допустимі keycodes: Back=4, Home=3, Recents=187, Vol+=24, Vol-=25, Power=26
+const ALLOWED_KEYS = new Set([3, 4, 24, 25, 26, 187]);
+
+app.post('/api/adb/keyevent', (req, res) => {
+  const code = Number(req.body.keycode);
+  if (!ALLOWED_KEYS.has(code)) {
+    return res.status(400).json({ error: 'Invalid keycode' });
+  }
+  try {
+    execSync(`${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb shell input keyevent ${code}`, { timeout: 3000 });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'ADB недоступний або емулятор ще завантажується' });
+  }
+});
+
+app.post('/api/adb/rotate', (req, res) => {
+  const orientation = Number(req.body.orientation); // 0=portrait, 1=landscape
+  if (orientation !== 0 && orientation !== 1) {
+    return res.status(400).json({ error: 'Invalid orientation' });
+  }
+  const adb = `${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb`;
+  try {
+    execSync(`${adb} shell settings put system accelerometer_rotation 0`, { timeout: 3000 });
+    execSync(`${adb} shell settings put system user_rotation ${orientation}`, { timeout: 3000 });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'ADB rotate failed' });
+  }
+});
+
+app.post('/api/adb/swipe', (req, res) => {
+  const { x1, y1, x2, y2, duration = 300 } = req.body;
+  const adb = `${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb`;
+  try {
+    execSync(`${adb} shell input swipe ${x1} ${y1} ${x2} ${y2} ${duration}`, { timeout: 3000 });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Swipe failed' });
+  }
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// ── Start ────────────────────────────────────────────────────────
+const PORT = process.env.API_PORT || 3001;
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`🚀 API на 127.0.0.1:${PORT}`);
+});
 
 CPEOF013
 
@@ -1428,47 +1148,81 @@ RUN cat > /app/nginx.conf << 'CPEOF014'
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
-events { worker_connections 512; }
+
+events {
+    worker_connections 512;
+}
+
 http {
-  include /etc/nginx/mime.types;
-  default_type application/octet-stream;
-  sendfile on; keepalive_timeout 65;
-  gzip on; gzip_types text/plain text/css application/javascript application/json;
-  server {
-    listen 8080; server_name _;
-    location /novnc/ { alias /opt/novnc/; try_files $uri $uri/ =404; }
-    location /websockify/browser {
-      proxy_pass http://127.0.0.1:6901;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
-      proxy_read_timeout 3600s;
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile      on;
+    keepalive_timeout 65;
+
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json;
+
+    server {
+        listen 8080;
+        server_name _;
+
+        # ── noVNC static client ────────────────────────────────
+        location /novnc/ {
+            alias /opt/novnc/;
+            try_files $uri $uri/ =404;
+        }
+
+        # ── WebSocket proxy → websockify (browser) ─────────────
+        location /websockify/browser {
+            proxy_pass http://127.0.0.1:6901;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+
+        # ── WebSocket proxy → websockify (desktop) ─────────────
+        location /websockify/desktop {
+            proxy_pass http://127.0.0.1:6902;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+
+        # ── WebSocket proxy → websockify (phone) ───────────────
+        location /websockify/phone {
+            proxy_pass http://127.0.0.1:6903;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+
+        # ── API → Node.js backend ──────────────────────────────
+        location /api/ {
+            proxy_pass http://127.0.0.1:3001;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_read_timeout 60s;
+        }
+
+        # ── React SPA ──────────────────────────────────────────
+        location / {
+            root /app/frontend/dist;
+            try_files $uri $uri/ /index.html;
+            expires 1h;
+            add_header Cache-Control "public, no-transform";
+        }
     }
-    location /websockify/desktop {
-      proxy_pass http://127.0.0.1:6902;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
-      proxy_read_timeout 3600s;
-    }
-    location /websockify/phone {
-      proxy_pass http://127.0.0.1:6903;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
-      proxy_read_timeout 3600s;
-    }
-    location /api/ {
-      proxy_pass http://127.0.0.1:3001;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_read_timeout 120s;
-    }
-    location / {
-      root /app/frontend/dist;
-      try_files $uri $uri/ /index.html;
-    }
-  }
 }
 
 CPEOF014
@@ -1480,29 +1234,30 @@ logfile=/var/log/supervisor/supervisord.log
 pidfile=/var/run/supervisord.pid
 loglevel=info
 user=root
+
 [program:nginx]
 command=/usr/sbin/nginx -g "daemon off;" -c /app/nginx.conf
 autostart=true
 autorestart=true
+startretries=5
 priority=10
 stdout_logfile=/var/log/supervisor/nginx.log
 stderr_logfile=/var/log/supervisor/nginx.err.log
+
 [program:backend]
 command=node /app/backend/server.js
 directory=/app/backend
 autostart=true
 autorestart=true
+startretries=10
 priority=20
-environment=NODE_ENV="production",API_PORT="3001",CLOUDPLAY_PASSWORD="%(ENV_CLOUDPLAY_PASSWORD)s"
+environment=NODE_ENV="production",API_PORT="3001"
 stdout_logfile=/var/log/supervisor/backend.log
 stderr_logfile=/var/log/supervisor/backend.err.log
 
 CPEOF015
 
-# Залежності backend
 RUN cd /app/backend && npm install --production
-
-# Залежності + білд frontend
 RUN cd /app/frontend && npm install && npm run build
 
 EXPOSE 8080
