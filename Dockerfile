@@ -1,29 +1,36 @@
 FROM ubuntu:22.04
-LABEL maintainer="CloudPlay v1.2-fix"
+LABEL maintainer="CloudPlay v1.2-kde"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
+# ── Системні пакети + KDE Plasma ─────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
-    openbox xfce4 xfce4-terminal xterm \
+    kde-plasma-desktop konsole dolphin \
     chromium-browser \
+    openbox xterm \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
-    net-tools procps fonts-liberation fontconfig libfontconfig1 \
+    net-tools procps \
+    fonts-liberation fontconfig libfontconfig1 \
+    imagemagick \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ── Node.js 20 ───────────────────────────────────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ── noVNC ────────────────────────────────────────────────────────
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
 
+# ── Директорії ───────────────────────────────────────────────────
 RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx /tmp/xdg \
-    && mkdir -p /root/.config/openbox /root/.config/xfce4 \
+    && mkdir -p /root/.config/openbox \
     && rm -f /etc/nginx/sites-enabled/default
 
 RUN cat > /app/frontend/package.json << 'CPEOF000'
@@ -924,6 +931,7 @@ CPEOF011
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
 const { spawn } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
 
 const CONFIGS = {
   browser: { display:':1', vncPort:5901, wsPort:6901, res:'1920x1080x24' },
@@ -935,99 +943,73 @@ const sessions = { browser:null, desktop:null, phone:null };
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 function spawnProc(cmd, args, env={}){
-  const proc = spawn(cmd, args, {
-    env:{ ...process.env, ...env },
-    stdio:'ignore', detached:false,
-  });
-  proc.on('error', err=>console.error(`[${cmd}] ERR:`,err.message));
+  const proc = spawn(cmd, args, { env:{...process.env,...env}, stdio:'ignore', detached:false });
+  proc.on('error', err=>console.error(`[${cmd}]:`,err.message));
   return proc;
 }
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
   const cfg = CONFIGS[type];
-  if(!cfg) throw new Error('Unknown type');
-
-  console.log(`\n▶ Starting [${type}] on ${cfg.display}...`);
   const procs = {};
 
-  // ── Xvfb ─────────────────────────────────────────────────────
-  procs.xvfb = spawnProc('Xvfb', [
-    cfg.display,
-    '-screen','0', cfg.res,
-    '-ac', '-nolisten','tcp', '-noreset', '-dpi','96',
-  ]);
+  // Xvfb
+  procs.xvfb = spawnProc('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
   await sleep(1500);
 
-  // ── WM + App ──────────────────────────────────────────────────
   if(type === 'browser'){
-    // Openbox без зайвих флагів
-    procs.wm = spawnProc('openbox', [], { DISPLAY:cfg.display, HOME:'/root' });
+    procs.wm = spawnProc('openbox',[], { DISPLAY:cfg.display, HOME:'/root' });
     await sleep(800);
-
-    // Chromium з swiftshader — ОБОВ'ЯЗКОВО для рендерингу в контейнері
-    procs.app = spawnProc('chromium-browser', [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu-sandbox',
-      '--use-gl=swiftshader',        // <- ключовий фікс чорного екрану
-      '--disable-software-rasterizer=false',
-      '--ignore-gpu-blocklist',
-      '--window-size=1920,1080',
-      '--start-maximized',
-      '--new-window',
-      'https://www.google.com',
+    procs.app = spawnProc('chromium-browser',[
+      '--no-sandbox','--disable-dev-shm-usage','--disable-gpu-sandbox',
+      '--use-gl=swiftshader','--ignore-gpu-blocklist',
+      '--window-size=1920,1080','--start-maximized','https://www.google.com',
     ], { DISPLAY:cfg.display, HOME:'/root' });
 
   } else if(type === 'desktop'){
-    // Запускаємо dbus + XFCE правильно
-    procs.dbus = spawnProc('bash',['-c',
-      'mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'
-    ],{});
-    await sleep(500);
+    // KDE Plasma — виглядає як Windows 10
+    fs.mkdirSync('/tmp/xdg', { recursive:true });
+    fs.mkdirSync('/root/.config', { recursive:true });
+    procs.dbus = spawnProc('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
+    await sleep(800);
 
-    procs.wm = spawnProc('bash',['-c','startxfce4'],{
-      DISPLAY: cfg.display,
-      HOME:    '/root',
-      DBUS_SESSION_BUS_ADDRESS: 'autolaunch:',
-      XDG_RUNTIME_DIR: '/tmp/xdg',
-      XDG_CONFIG_HOME: '/root/.config',
+    // Запускаємо startplasma-x11 (KDE)
+    procs.wm = spawnProc('bash',['-c',
+      'export DISPLAY='+cfg.display+' && ' +
+      'export HOME=/root && ' +
+      'export XDG_RUNTIME_DIR=/tmp/xdg && ' +
+      'export DBUS_SESSION_BUS_ADDRESS=autolaunch: && ' +
+      'startplasma-x11 2>/tmp/kde.log || ' +
+      // Fallback: XFCE якщо KDE не встановлено
+      'startxfce4 2>/tmp/xfce.log'
+    ],{
+      DISPLAY: cfg.display, HOME:'/root',
+      XDG_RUNTIME_DIR:'/tmp/xdg',
+      DBUS_SESSION_BUS_ADDRESS:'autolaunch:',
     });
 
-  } else if(type === 'phone'){
-    // Openbox БЕЗ --config-file /dev/null (це ламало все)
-    procs.wm = spawnProc('openbox', [], { DISPLAY:cfg.display, HOME:'/root' });
+  } else {
+    procs.wm = spawnProc('openbox',[], { DISPLAY:cfg.display, HOME:'/root' });
     await sleep(600);
-    // xterm як заглушка (Android SDK не встановлено)
-    procs.app = spawnProc('xterm',[
-      '-geometry','80x24+100+100',
-      '-title','CloudPlay Phone (coming soon)',
-      '-e','echo "Android емулятор буде доступний у наступній версії." && sleep 9999'
+    procs.app = spawnProc('xterm',['-geometry','80x24+100+100','-bg','#0d1117','-fg','#58a6ff',
+      '-title','Cloud Phone (coming soon)',
+      '-e','echo "Android буде незабаром 🚀" && sleep 9999'
     ],{ DISPLAY:cfg.display });
   }
 
-  // Чекаємо щоб додаток встиг запуститись
-  await sleep(type === 'desktop' ? 4000 : 2500);
+  await sleep(type === 'desktop' ? 6000 : 2500);
 
-  // ── x11vnc ────────────────────────────────────────────────────
   procs.vnc = spawnProc('x11vnc',[
-    '-display', cfg.display,
-    '-forever','-nopw','-quiet','-shared',
-    '-rfbport', String(cfg.vncPort),
-    '-wait','20',
-    '-defer','10',
+    '-display',cfg.display,'-forever','-nopw','-quiet','-shared',
+    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10',
   ]);
   await sleep(1000);
 
-  // ── websockify ────────────────────────────────────────────────
-  procs.ws = spawnProc('websockify',[
-    String(cfg.wsPort),
-    `localhost:${cfg.vncPort}`,
-  ]);
+  procs.ws = spawnProc('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await sleep(500);
 
   sessions[type] = { id:uuidv4(), type, procs, startTime:new Date() };
-  console.log(`✅ [${type}] ready. VNC:${cfg.vncPort} WS:${cfg.wsPort}`);
+  console.log(`✅ [${type}] ready`);
   return sessions[type];
 }
 
@@ -1043,7 +1025,7 @@ async function stopSession(type){
 function getAllStatus(){
   const out={};
   for(const [type,s] of Object.entries(sessions)){
-    out[type] = s ? {running:true,id:s.id,startTime:s.startTime} : {running:false};
+    out[type] = s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
   }
   return out;
 }
