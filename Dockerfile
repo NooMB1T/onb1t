@@ -2,20 +2,28 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
+# Пакети (БЕЗ chromium-browser — це snap-обгортка, не працює в Docker)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
     mate-desktop-environment arc-theme papirus-icon-theme \
-    chromium-browser \
-    openbox imagemagick \
+    openbox imagemagick bzip2 \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
+    libdbus-glib-1-2 libgtk-3-0 libxt6 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Firefox — пряме завантаження з Mozilla (не snap!)
+RUN wget -q "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
+    -O /tmp/ff.tar.bz2 \
+    && tar xjf /tmp/ff.tar.bz2 -C /opt/ \
+    && rm /tmp/ff.tar.bz2 \
+    && /opt/firefox/firefox --version || true
 
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
@@ -980,7 +988,7 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
 CPEOF011
 
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 
@@ -991,6 +999,7 @@ const CONFIGS = {
 };
 const sessions = { browser:null, desktop:null, phone:null };
 
+const FF = '/opt/firefox/firefox';
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function sp(cmd,args,env={}){
   const p=spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
@@ -1004,73 +1013,73 @@ async function startSession(type){
   const procs={};
   console.log(`▶ [${type}]...`);
 
-  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
+  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,
+    '-ac','-nolisten','tcp','-noreset','-dpi','96']);
   await sleep(1500);
 
   if(type==='browser'){
-    // Chromium на весь екран — без WM, без зайвого
-    procs.app=sp('chromium-browser',[
-      '--no-sandbox','--disable-dev-shm-usage',
-      '--disable-gpu',                    // повністю вимикаємо GPU
-      '--disable-software-rasterizer',    // форсуємо CPU рендер
-      '--no-first-run','--disable-extensions',
-      '--disable-background-networking',
-      '--window-size=1920,1080',
-      '--start-maximized',
-      '--window-position=0,0',
-      'https://www.google.com',
-    ],{DISPLAY:cfg.display,HOME:'/root',
-       LIBGL_ALWAYS_SOFTWARE:'1',GALLIUM_DRIVER:'softpipe'});
+    // Firefox — працює без snap, рендерить нормально
+    procs.wm=sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(600);
+    procs.app=sp(FF,[
+      '--no-remote','--new-instance',
+      '-url','https://www.google.com',
+    ],{
+      DISPLAY:cfg.display, HOME:'/root',
+      MOZ_DISABLE_CONTENT_SANDBOX:'1',
+      MOZ_ENABLE_WAYLAND:'0',
+    });
 
   } else if(type==='desktop'){
-    // MATE Desktop — GNOME-стиль, VNC-сумісний
+    // MATE Desktop + Firefox
     fs.mkdirSync('/tmp/xdg',{recursive:true});
     fs.mkdirSync('/root/.config',{recursive:true});
+    try{ require('child_process').execSync(
+      'convert -size 1920x1080 gradient:"#0d1117-#1c2333" /tmp/wp.png',
+      {timeout:5000}); }catch{}
 
-    // Генеруємо wallpaper
-    try{ execSync('convert -size 1920x1080 gradient:"#0d1117-#1c2333" /tmp/wp.png',{timeout:5000}); }catch{}
-
-    procs.dbus=sp('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
-    await sleep(600);
+    procs.dbus=sp('bash',['-c',
+      'mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
+    await sleep(700);
 
     procs.wm=sp('bash',['-c',`
       export DISPLAY=${cfg.display}
       export HOME=/root
       export XDG_RUNTIME_DIR=/tmp/xdg
       export DBUS_SESSION_BUS_ADDRESS=autolaunch:
-      # Встановлюємо Arc-Dark тему після запуску
-      (sleep 4
+      (sleep 5
        gsettings set org.mate.interface gtk-theme 'Arc-Dark' 2>/dev/null
        gsettings set org.mate.interface icon-theme 'Papirus-Dark' 2>/dev/null
        gsettings set org.mate.Marco.general theme 'Arc-Dark' 2>/dev/null
        gsettings set org.mate.screensaver lock-enabled false 2>/dev/null
        [ -f /tmp/wp.png ] && gsettings set org.mate.background picture-filename '/tmp/wp.png' 2>/dev/null
-      ) &
+       gsettings set org.mate.background picture-options 'stretched' 2>/dev/null
+      )&
       dbus-run-session -- mate-session 2>/tmp/mate.log
-    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg'});
+    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg',
+       MOZ_ENABLE_WAYLAND:'0'});
 
   } else if(type==='phone'){
-    // Власний Android UI — HTML сторінка в Chromium kiosk
+    // Власний Android UI в Firefox (кіоск)
     procs.wm=sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
     await sleep(700);
-    procs.app=sp('chromium-browser',[
-      '--no-sandbox','--disable-dev-shm-usage',
-      '--disable-gpu','--disable-software-rasterizer',
-      '--no-first-run','--disable-extensions',
-      '--app=file:///app/backend/android.html',
-      '--window-size=412,915',
-      '--window-position=0,0',
-    ],{DISPLAY:cfg.display,HOME:'/root',
-       LIBGL_ALWAYS_SOFTWARE:'1',GALLIUM_DRIVER:'softpipe'});
+    procs.app=sp(FF,[
+      '--no-remote','--new-instance','--kiosk',
+      'file:///app/backend/android.html',
+    ],{
+      DISPLAY:cfg.display, HOME:'/root',
+      MOZ_DISABLE_CONTENT_SANDBOX:'1',
+      MOZ_ENABLE_WAYLAND:'0',
+    });
   }
 
-  await sleep(type==='desktop'?5000:3000);
+  await sleep(type==='desktop'?5000:4000);
 
   procs.vnc=sp('x11vnc',[
     '-display',cfg.display,'-forever','-nopw','-quiet','-shared',
     '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10',
   ]);
-  await sleep(1000);
+  await sleep(1200);
 
   procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await sleep(500);
