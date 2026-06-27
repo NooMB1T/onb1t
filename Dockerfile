@@ -1,33 +1,29 @@
 FROM ubuntu:22.04
-LABEL maintainer="CloudPlay v1.2-kde"
+LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# ── Системні пакети + KDE Plasma ─────────────────────────────────
+# Пакети: GNOME + інструменти
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
-    kde-plasma-desktop konsole dolphin \
+    gnome-shell gnome-session gnome-terminal nautilus \
+    yaru-theme-gtk yaru-theme-icon \
     chromium-browser \
-    openbox xterm \
+    openbox xterm imagemagick \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
-    net-tools procps \
-    fonts-liberation fontconfig libfontconfig1 \
-    imagemagick \
+    net-tools procps fonts-liberation fontconfig libfontconfig1 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 20 ───────────────────────────────────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── noVNC ────────────────────────────────────────────────────────
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
 
-# ── Директорії ───────────────────────────────────────────────────
 RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx /tmp/xdg \
     && mkdir -p /root/.config/openbox \
@@ -316,127 +312,184 @@ import StatsBar from './StatsBar.jsx';
 
 const SERVICES = [
   { id:'browser', label:'Cloud Browser', icon:'🌐',
-    desc:'Chromium у хмарі. Нічого не грузить твій девайс.',
-    accent:'#4f46e5', gradient:'linear-gradient(135deg,#4f46e5,#7c3aed)', glow:'rgba(79,70,229,0.5)' },
+    desc:'Chromium у хмарі. Повний браузер без навантаження на девайс.',
+    accent:'#4f46e5', gradient:'linear-gradient(135deg,#4f46e5,#7c3aed)', glow:'rgba(79,70,229,0.6)' },
   { id:'desktop', label:'Cloud PC', icon:'🖥️',
-    desc:'Ubuntu Linux з XFCE. Повноцінний ПК у браузері.',
-    accent:'#ea580c', gradient:'linear-gradient(135deg,#ea580c,#dc2626)', glow:'rgba(234,88,12,0.5)' },
+    desc:'Ubuntu GNOME. Сучасний робочий стіл у браузері.',
+    accent:'#0ea5e9', gradient:'linear-gradient(135deg,#0ea5e9,#6366f1)', glow:'rgba(14,165,233,0.6)' },
   { id:'phone', label:'Cloud Phone', icon:'📱',
-    desc:'Android 11 з swiftshader. Мобільні додатки у хмарі.',
-    accent:'#10b981', gradient:'linear-gradient(135deg,#10b981,#0891b2)', glow:'rgba(16,185,129,0.5)' },
+    desc:'Android-браузер з мобільним UA. Сайти як на телефоні.',
+    accent:'#10b981', gradient:'linear-gradient(135deg,#10b981,#0891b2)', glow:'rgba(16,185,129,0.6)' },
 ];
 
 export default function Dashboard({ onStart, onLogout, toast }) {
   const [loading, setLoading]   = useState(null);
   const [statuses, setStatuses] = useState({});
+  const [time, setTime]         = useState(new Date());
 
-  useEffect(() => {
-    const poll = async () => {
-      try {
-        const r = await fetch('/api/sessions/status', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cp_token')}` }
+  useEffect(()=>{
+    const poll=async()=>{
+      try{
+        const r=await fetch('/api/sessions/status',{
+          headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}
         });
         setStatuses(await r.json());
-      } catch {}
+      }catch{}
     };
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => clearInterval(id);
-  }, []);
+    poll(); const id=setInterval(poll,5000); return()=>clearInterval(id);
+  },[]);
 
-  const handleStart = async (service) => {
-    setLoading(service.id);
-    try { await onStart(service.id); }
-    catch (e) { toast(e.message, 'error'); }
-    finally { setLoading(null); }
+  useEffect(()=>{ const id=setInterval(()=>setTime(new Date()),1000); return()=>clearInterval(id); },[]);
+
+  const handleStart=async(sv)=>{
+    setLoading(sv.id);
+    try{ await onStart(sv.id); }
+    catch(e){ toast(e.message,'error'); }
+    finally{ setLoading(null); }
   };
 
-  const handleReconnect = (type) => {
-    onStart(type).catch(() => {});
-  };
-
-  const handleStop = async (type) => {
-    await fetch(`/api/sessions/stop/${type}`, {
-      method:'POST',
-      headers:{ 'Authorization': `Bearer ${localStorage.getItem('cp_token')}` }
+  const handleStop=async(type)=>{
+    await fetch(`/api/sessions/stop/${type}`,{
+      method:'POST',headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}
     });
-    setStatuses(s => ({ ...s, [type]:{ running:false } }));
-    toast('Сесію зупинено', 'info');
+    setStatuses(s=>({...s,[type]:{running:false}}));
+    toast('Сесію зупинено','info');
   };
+
+  const fmt=d=>d.toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'});
+  const fmtDate=d=>d.toLocaleDateString('uk-UA',{weekday:'short',day:'numeric',month:'short'});
+  const activeCount=Object.values(statuses).filter(s=>s?.running).length;
 
   return (
     <div style={s.root}>
-      <Aurora />
+      <Mesh />
+
+      {/* Header */}
       <header style={s.header}>
-        <div style={s.logo}>
-          <span style={s.lIcon}>⚡</span>
-          <span style={s.lName}>CloudPlay</span>
-          <span style={s.ver}>v1.2</span>
+        <div style={s.logoRow}>
+          <span style={s.bolt}>⚡</span>
+          <span style={s.brand}>CloudPlay</span>
+          <span style={s.ver}>v1.3</span>
         </div>
-        <div style={{flex:1, display:'flex', justifyContent:'center'}}>
-          <StatsBar statuses={statuses} />
+        <div style={s.headerCenter}>
+          <StatsBar statuses={statuses}/>
         </div>
-        <button style={s.logout} onClick={onLogout} title="Вийти">⏻</button>
+        <div style={s.headerRight}>
+          <div style={s.clock}>
+            <div style={s.clockTime}>{fmt(time)}</div>
+            <div style={s.clockDate}>{fmtDate(time)}</div>
+          </div>
+          <button style={s.logout} onClick={onLogout} title="Вийти">⏻</button>
+        </div>
       </header>
 
+      {/* Hero */}
       <main style={s.main}>
         <div style={s.hero}>
-          <p style={s.eye}>Особистий хмарний сервер</p>
-          <h1 style={s.title}>Твоя хмара,<br /><span style={s.grad}>твої правила</span></h1>
-          <p style={s.sub}>Запускай браузер, Linux або Android прямо у браузері телефону.</p>
+          <div style={s.heroBadge}>
+            <span style={{...s.heroDot, background: activeCount>0?'#10b981':'#4f46e5',
+              boxShadow:`0 0 8px ${activeCount>0?'#10b981':'#4f46e5'}`}}/>
+            {activeCount>0 ? `${activeCount} активних сесій` : 'Готовий до роботи'}
+          </div>
+          <h1 style={s.title}>
+            Твоя хмара,<br/>
+            <span style={s.grad}>твої правила</span>
+          </h1>
+          <p style={s.sub}>Браузер, Linux та Android — все в одному місці.</p>
         </div>
 
         <div style={s.grid}>
-          {SERVICES.map(sv => (
+          {SERVICES.map(sv=>(
             <ServiceCard key={sv.id} service={sv}
               status={statuses[sv.id]}
-              loading={loading === sv.id}
-              onStart={() => handleStart(sv)}
-              onReconnect={() => handleReconnect(sv.id)}
-              onStop={() => handleStop(sv.id)}
+              loading={loading===sv.id}
+              onStart={()=>handleStart(sv)}
+              onReconnect={()=>onStart(sv.id).catch(()=>{})}
+              onStop={()=>handleStop(sv.id)}
             />
           ))}
         </div>
-        <p style={s.foot}>CloudPlay v1.2 · Приватний · 2-3 юзери</p>
+
+        <div style={s.footer}>
+          <span style={s.footTxt}>CloudPlay v1.3</span>
+          <span style={s.footDivider}>·</span>
+          <span style={s.footTxt}>Особистий сервер</span>
+          <span style={s.footDivider}>·</span>
+          <span style={s.footTxt}>2-3 користувачі</span>
+        </div>
       </main>
 
       <style>{`
-        @keyframes a1{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(60px,-40px)scale(1.1)}}
-        @keyframes a2{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(-50px,60px)scale(1.08)}}
-        @keyframes a3{0%,100%{transform:translate(-50%,-50%)scale(1)}50%{transform:translate(-50%,-50%)scale(1.18)}}
+        @keyframes m1{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(80px,-60px)scale(1.15)}}
+        @keyframes m2{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(-60px,80px)scale(1.1)}}
+        @keyframes m3{0%,100%{transform:translate(-50%,-50%)scale(1)}50%{transform:translate(-50%,-50%)scale(1.2)}}
+        @keyframes m4{0%,100%{transform:translate(0,0)}50%{transform:translate(40px,50px)}}
         @keyframes gS{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-        @keyframes fU{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
+        @keyframes fU{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
       `}</style>
     </div>
   );
 }
 
-function Aurora() {
-  return (
+function Mesh(){
+  return(
     <div style={{position:'fixed',inset:0,pointerEvents:'none',overflow:'hidden',zIndex:0}}>
-      <div style={{position:'absolute',width:800,height:800,background:'#4f46e5',opacity:.1,top:-300,right:-200,borderRadius:'50%',filter:'blur(120px)',animation:'a1 11s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:700,height:700,background:'#7c3aed',opacity:.09,bottom:-200,left:-200,borderRadius:'50%',filter:'blur(120px)',animation:'a2 14s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:500,height:500,background:'#06b6d4',opacity:.07,top:'50%',left:'50%',borderRadius:'50%',filter:'blur(100px)',animation:'a3 9s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:900,height:900,borderRadius:'50%',
+        background:'radial-gradient(circle,#4f46e5 0%,transparent 70%)',
+        opacity:.12,top:-400,right:-200,filter:'blur(60px)',animation:'m1 12s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:800,height:800,borderRadius:'50%',
+        background:'radial-gradient(circle,#7c3aed 0%,transparent 70%)',
+        opacity:.1,bottom:-300,left:-200,filter:'blur(60px)',animation:'m2 15s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:600,height:600,borderRadius:'50%',
+        background:'radial-gradient(circle,#0ea5e9 0%,transparent 70%)',
+        opacity:.08,top:'50%',left:'50%',filter:'blur(80px)',animation:'m3 10s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:400,height:400,borderRadius:'50%',
+        background:'radial-gradient(circle,#10b981 0%,transparent 70%)',
+        opacity:.07,bottom:100,right:100,filter:'blur(60px)',animation:'m4 13s ease-in-out infinite'}}/>
+      {/* Grid lines */}
+      <div style={{position:'absolute',inset:0,
+        backgroundImage:'linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px)',
+        backgroundSize:'60px 60px'}}/>
     </div>
   );
 }
 
-const s = {
+const s={
   root:{minHeight:'100vh',background:'#030308',fontFamily:"'Space Grotesk',sans-serif",color:'#fff',position:'relative',overflow:'hidden'},
-  header:{position:'relative',zIndex:10,display:'flex',alignItems:'center',gap:16,padding:'18px 40px',borderBottom:'1px solid rgba(255,255,255,0.06)',backdropFilter:'blur(12px)'},
-  logo:{display:'flex',alignItems:'center',gap:10},
-  lIcon:{fontSize:26,filter:'drop-shadow(0 0 10px rgba(255,200,0,.7))'},
-  lName:{fontSize:20,fontWeight:700,letterSpacing:'-.5px'},
-  ver:{fontSize:11,color:'rgba(255,255,255,.3)',border:'1px solid rgba(255,255,255,.1)',padding:'2px 8px',borderRadius:6,fontFamily:"'Inter',sans-serif"},
-  logout:{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',color:'rgba(255,255,255,.5)',width:36,height:36,borderRadius:9,cursor:'pointer',fontSize:16},
-  main:{position:'relative',zIndex:10,maxWidth:1080,margin:'0 auto',padding:'64px 40px 48px'},
-  hero:{marginBottom:52,animation:'fU .6s ease'},
-  eye:{fontSize:11,fontWeight:600,letterSpacing:'2.5px',textTransform:'uppercase',color:'rgba(255,255,255,.28)',marginBottom:16,fontFamily:"'Inter',sans-serif"},
-  title:{fontSize:'clamp(36px,6vw,66px)',fontWeight:700,lineHeight:1.1,letterSpacing:'-2px',marginBottom:16},
-  grad:{background:'linear-gradient(135deg,#818cf8,#a78bfa,#34d399)',backgroundSize:'200% 200%',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',animation:'gS 5s ease infinite'},
-  sub:{fontSize:16,lineHeight:1.65,color:'rgba(255,255,255,.42)',fontFamily:"'Inter',sans-serif"},
-  grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(290px,1fr))',gap:18,marginBottom:40},
-  foot:{fontSize:12,color:'rgba(255,255,255,.16)',fontFamily:"'Inter',sans-serif",letterSpacing:'.5px'},
+  header:{position:'relative',zIndex:10,display:'flex',alignItems:'center',gap:16,padding:'14px 32px',
+    borderBottom:'1px solid rgba(255,255,255,0.06)',backdropFilter:'blur(20px)',
+    background:'rgba(3,3,8,0.7)'},
+  logoRow:{display:'flex',alignItems:'center',gap:8,flexShrink:0},
+  bolt:{fontSize:24,filter:'drop-shadow(0 0 12px rgba(255,200,0,.8))'},
+  brand:{fontSize:19,fontWeight:700,letterSpacing:'-.5px',color:'#fff'},
+  ver:{fontSize:10,color:'rgba(255,255,255,.3)',border:'1px solid rgba(255,255,255,.1)',
+    padding:'2px 7px',borderRadius:5,fontFamily:"'Inter',sans-serif",letterSpacing:'.5px'},
+  headerCenter:{flex:1,display:'flex',justifyContent:'center'},
+  headerRight:{display:'flex',alignItems:'center',gap:12,flexShrink:0},
+  clock:{textAlign:'right'},
+  clockTime:{fontSize:16,fontWeight:700,letterSpacing:'.5px',lineHeight:1.2,
+    fontVariantNumeric:'tabular-nums'},
+  clockDate:{fontSize:11,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif"},
+  logout:{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
+    color:'rgba(255,255,255,.5)',width:34,height:34,borderRadius:8,cursor:'pointer',fontSize:15},
+  main:{position:'relative',zIndex:10,maxWidth:1100,margin:'0 auto',padding:'56px 32px 48px'},
+  hero:{marginBottom:48,animation:'fU .5s ease'},
+  heroBadge:{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,
+    color:'rgba(255,255,255,.5)',fontFamily:"'Inter',sans-serif",
+    background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
+    padding:'6px 14px',borderRadius:20,marginBottom:20},
+  heroDot:{width:7,height:7,borderRadius:'50%',display:'inline-block'},
+  title:{fontSize:'clamp(32px,5.5vw,62px)',fontWeight:700,lineHeight:1.1,
+    letterSpacing:'-2px',marginBottom:14,margin:'0 0 14px'},
+  grad:{background:'linear-gradient(135deg,#818cf8 0%,#a78bfa 40%,#34d399 100%)',
+    backgroundSize:'200% 200%',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
+    animation:'gS 5s ease infinite'},
+  sub:{fontSize:16,lineHeight:1.6,color:'rgba(255,255,255,.38)',
+    fontFamily:"'Inter',sans-serif",marginTop:6},
+  grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:36},
+  footer:{display:'flex',alignItems:'center',gap:10},
+  footTxt:{fontSize:11,color:'rgba(255,255,255,.15)',fontFamily:"'Inter',sans-serif"},
+  footDivider:{color:'rgba(255,255,255,.1)',fontSize:11},
 };
 
 CPEOF006
@@ -929,7 +982,7 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
 CPEOF011
 
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 
@@ -941,96 +994,113 @@ const CONFIGS = {
 const sessions = { browser:null, desktop:null, phone:null };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-
-function spawnProc(cmd, args, env={}){
-  const proc = spawn(cmd, args, { env:{...process.env,...env}, stdio:'ignore', detached:false });
-  proc.on('error', err=>console.error(`[${cmd}]:`,err.message));
-  return proc;
+function sp(cmd,args,env={}){
+  const p = spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
+  p.on('error',e=>console.error(`[${cmd}]:`,e.message));
+  return p;
 }
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
   const cfg = CONFIGS[type];
   const procs = {};
+  console.log(`▶ [${type}] starting...`);
 
   // Xvfb
-  procs.xvfb = spawnProc('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
+  procs.xvfb = sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
   await sleep(1500);
 
   if(type === 'browser'){
-    procs.wm = spawnProc('openbox',[], { DISPLAY:cfg.display, HOME:'/root' });
-    await sleep(800);
-    procs.app = spawnProc('chromium-browser',[
-      '--no-sandbox','--disable-dev-shm-usage','--disable-gpu-sandbox',
-      '--use-gl=swiftshader','--ignore-gpu-blocklist',
-      '--window-size=1920,1080','--start-maximized','https://www.google.com',
-    ], { DISPLAY:cfg.display, HOME:'/root' });
+    // Без WM — тільки Chromium на весь екран
+    procs.app = sp('chromium-browser',[
+      '--no-sandbox','--disable-dev-shm-usage',
+      '--disable-gpu-sandbox','--use-gl=swiftshader',
+      '--ignore-gpu-blocklist','--in-process-gpu',
+      '--disable-extensions','--no-first-run',
+      '--window-size=1920,1080','--start-maximized',
+      'https://www.google.com',
+    ],{DISPLAY:cfg.display,HOME:'/root'});
 
   } else if(type === 'desktop'){
-    // KDE Plasma — виглядає як Windows 10
-    fs.mkdirSync('/tmp/xdg', { recursive:true });
-    fs.mkdirSync('/root/.config', { recursive:true });
-    procs.dbus = spawnProc('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
+    fs.mkdirSync('/tmp/xdg',{recursive:true});
+    fs.mkdirSync('/root/.config',{recursive:true});
+
+    // Wallpaper
+    try{ execSync('convert -size 1920x1080 gradient:"#0d1117-#161b22" /tmp/wp.png',{timeout:5000}); }catch{}
+
+    procs.dbus = sp('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
+    await sleep(700);
+
+    // GNOME (з fallback на XFCE якщо не встановлено)
+    procs.wm = sp('bash',['-c',`
+      export DISPLAY=${cfg.display}
+      export HOME=/root
+      export XDG_SESSION_TYPE=x11
+      export GDK_BACKEND=x11
+      export XDG_RUNTIME_DIR=/tmp/xdg
+      export GNOME_SHELL_SESSION_MODE=ubuntu
+      # Темна тема + wallpaper після запуску (через 5с)
+      (sleep 5
+       gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null
+       gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-dark' 2>/dev/null
+       gsettings set org.gnome.desktop.background picture-uri 'file:///tmp/wp.png' 2>/dev/null
+       gsettings set org.gnome.desktop.background picture-uri-dark 'file:///tmp/wp.png' 2>/dev/null
+       gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+      ) &
+      # Запуск GNOME → fallback XFCE
+      dbus-run-session -- gnome-session --session=ubuntu 2>/tmp/g.log ||
+      dbus-run-session -- gnome-session 2>/tmp/g2.log ||
+      startxfce4 2>/tmp/x.log
+    `],{DISPLAY:cfg.display,HOME:'/root',XDG_SESSION_TYPE:'x11',GDK_BACKEND:'x11',XDG_RUNTIME_DIR:'/tmp/xdg'});
+
+  } else if(type === 'phone'){
+    // Мобільний Chromium з Android User-Agent — реальний телефон в браузері
+    procs.wm = sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
     await sleep(800);
 
-    // Запускаємо startplasma-x11 (KDE)
-    procs.wm = spawnProc('bash',['-c',
-      'export DISPLAY='+cfg.display+' && ' +
-      'export HOME=/root && ' +
-      'export XDG_RUNTIME_DIR=/tmp/xdg && ' +
-      'export DBUS_SESSION_BUS_ADDRESS=autolaunch: && ' +
-      'startplasma-x11 2>/tmp/kde.log || ' +
-      // Fallback: XFCE якщо KDE не встановлено
-      'startxfce4 2>/tmp/xfce.log'
-    ],{
-      DISPLAY: cfg.display, HOME:'/root',
-      XDG_RUNTIME_DIR:'/tmp/xdg',
-      DBUS_SESSION_BUS_ADDRESS:'autolaunch:',
-    });
-
-  } else {
-    procs.wm = spawnProc('openbox',[], { DISPLAY:cfg.display, HOME:'/root' });
-    await sleep(600);
-    procs.app = spawnProc('xterm',['-geometry','80x24+100+100','-bg','#0d1117','-fg','#58a6ff',
-      '-title','Cloud Phone (coming soon)',
-      '-e','echo "Android буде незабаром 🚀" && sleep 9999'
-    ],{ DISPLAY:cfg.display });
+    procs.app = sp('chromium-browser',[
+      '--no-sandbox','--disable-dev-shm-usage',
+      '--disable-gpu-sandbox','--use-gl=swiftshader',
+      '--ignore-gpu-blocklist','--in-process-gpu',
+      '--no-first-run','--disable-extensions',
+      '--window-size=412,915',
+      '--window-position=334,2',
+      '--user-agent=Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.210 Mobile Safari/537.36',
+      '--force-device-scale-factor=2',
+      'https://m.google.com',
+    ],{DISPLAY:cfg.display,HOME:'/root'});
   }
 
-  await sleep(type === 'desktop' ? 6000 : 2500);
+  await sleep(type==='desktop'?5000:2800);
 
-  procs.vnc = spawnProc('x11vnc',[
+  procs.vnc = sp('x11vnc',[
     '-display',cfg.display,'-forever','-nopw','-quiet','-shared',
-    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10',
+    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10','-no6',
   ]);
   await sleep(1000);
 
-  procs.ws = spawnProc('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
+  procs.ws = sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await sleep(500);
 
-  sessions[type] = { id:uuidv4(), type, procs, startTime:new Date() };
+  sessions[type]={id:uuidv4(),type,procs,startTime:new Date()};
   console.log(`✅ [${type}] ready`);
   return sessions[type];
 }
 
 async function stopSession(type){
-  const s = sessions[type];
-  if(!s) return;
-  for(const proc of Object.values(s.procs).reverse()){
-    try{ if(proc&&!proc.killed) proc.kill('SIGTERM'); }catch{}
-  }
-  sessions[type] = null;
+  const s=sessions[type]; if(!s)return;
+  for(const p of Object.values(s.procs).reverse())
+    try{if(p&&!p.killed)p.kill('SIGTERM');}catch{}
+  sessions[type]=null;
 }
 
 function getAllStatus(){
-  const out={};
-  for(const [type,s] of Object.entries(sessions)){
-    out[type] = s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
-  }
-  return out;
+  const o={};
+  for(const[t,s]of Object.entries(sessions))
+    o[t]=s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
+  return o;
 }
-
-module.exports = { startSession, stopSession, getAllStatus };
+module.exports={startSession,stopSession,getAllStatus};
 
 CPEOF012
 
