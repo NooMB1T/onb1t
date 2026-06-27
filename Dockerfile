@@ -2,33 +2,63 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Базові пакети + XFCE
+# Базові пакети + XFCE + залежності Chrome + все що треба юзеру
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tigervnc-standalone-server \
     x11-xserver-utils xauth dbus-x11 \
-    xfce4 xfce4-terminal xfce4-goodies \
+    xfce4 xfce4-terminal xfce4-goodies xfce4-power-manager \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
     thunar mousepad \
     vlc qbittorrent \
+    gimp \
+    libreoffice \
+    audacity \
+    flameshot \
+    keepassxc \
+    btop neofetch \
+    telegram-desktop \
     openbox tint2 feh \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
+    libnspr4 libnss3 xdg-utils libglib2.0-0 libgbm1 \
     python3 python3-pip \
-    wget curl unzip gnupg supervisor nginx \
+    wget curl unzip gnupg software-properties-common supervisor nginx \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Google Chrome (не snap, реальний бінарник)
+# Google Chrome
 RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
-    && rm google-chrome-stable_current_amd64.deb \
+    && dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -f -y \
+    && rm -f google-chrome-stable_current_amd64.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Wine — запуск Windows програм і ігор
+RUN dpkg --add-architecture i386 \
+    && mkdir -pm755 /etc/apt/keyrings \
+    && wget -q https://dl.winehq.org/wine-builds/winehq.key \
+       -O /etc/apt/keyrings/winehq-archive.key \
+    && wget -q https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources \
+       -O /etc/apt/sources.list.d/winehq-jammy.sources \
+    && apt-get update \
+    && apt-get install -y --install-recommends winehq-stable winetricks \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Lutris — ігровий менеджер (Steam, Wine, Proton)
+RUN add-apt-repository ppa:lutris-team/lutris -y \
+    && apt-get update \
+    && apt-get install -y lutris \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Steam
-RUN dpkg --add-architecture i386 \
-    && apt-get update \
+RUN apt-get update \
     && apt-get install -y steam-installer \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Flatpak + магазин програм
+RUN apt-get update \
+    && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
+    && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20
@@ -654,56 +684,49 @@ const spin={display:'inline-block',width:13,height:13,
 CPEOF007
 
 RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CPEOF008'
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 const META = {
-  browser: { icon:'🌐', name:'Cloud Browser', sub:'Chromium', boot:25 },
-  desktop: { icon:'🖥️', name:'Cloud PC',      sub:'Ubuntu XFCE', boot:35 },
-  phone:   { icon:'📱', name:'Cloud Phone',   sub:'Android 11', boot:20 },
+  browser: { icon:'🌐', name:'Cloud Browser', sub:'Google Chrome', boot:20 },
+  desktop: { icon:'🖥️', name:'Cloud PC', sub:'Ubuntu XFCE', boot:35 },
+  phone:   { icon:'📱', name:'Cloud Phone', sub:'Android UI', boot:15 },
 };
 
-async function adbKey(keycode){
-  try{ await fetch('/api/adb/keyevent',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({keycode})}); }catch{}
-}
-
 export default function SessionViewer({ type, url, onBack }){
-  const [loaded, setLoaded]     = useState(false);
-  const [countdown, setCountdown] = useState(META[type]?.boot || 25);
-  const [retries, setRetries]   = useState(0);
-  const iframeRef               = useRef(null);
-  const meta                    = META[type] || META.browser;
+  const [loaded, setLoaded]       = useState(false);
+  const [countdown, setCountdown] = useState(META[type]?.boot||25);
+  const [retries, setRetries]     = useState(0);
+  const [zoom, setZoom]           = useState(1);
+  const [showTools, setShowTools] = useState(true);
+  const iframeRef = useRef(null);
+  const meta = META[type]||META.browser;
 
-  // Countdown timer
   useEffect(()=>{
     if(loaded) return;
-    const id = setInterval(()=>{
-      setCountdown(c=> c > 0 ? c-1 : 0);
-    },1000);
-    return ()=>clearInterval(id);
+    const id=setInterval(()=>setCountdown(c=>c>0?c-1:0),1000);
+    return()=>clearInterval(id);
   },[loaded]);
 
-  const handleLoad = useCallback(()=> setLoaded(true),[]);
+  const handleLoad = useCallback(()=>setLoaded(true),[]);
 
-  const handleRetry = ()=>{
+  const retry=()=>{
     setLoaded(false);
-    setCountdown(META[type]?.boot || 25);
+    setCountdown(META[type]?.boot||25);
     setRetries(r=>r+1);
     if(iframeRef.current){
-      const src = iframeRef.current.src;
-      iframeRef.current.src = '';
-      setTimeout(()=>{ if(iframeRef.current) iframeRef.current.src = src; },300);
+      const src=iframeRef.current.src;
+      iframeRef.current.src='';
+      setTimeout(()=>{ if(iframeRef.current) iframeRef.current.src=src; },400);
     }
   };
 
-  const openFullscreen = ()=>{
+  const fullscreen=()=>{
     if(iframeRef.current?.requestFullscreen) iframeRef.current.requestFullscreen();
     else if(url) window.open(url,'_blank');
   };
 
-  // noVNC URL з кращими параметрами
   const vncUrl = url
-    ? `${url}&resize=scale&quality=6&compression=2&reconnect_delay=3000&bell=0`
+    ? `${url}&resize=scale&quality=7&compression=2&reconnect_delay=3000`
     : null;
 
   return (
@@ -712,124 +735,124 @@ export default function SessionViewer({ type, url, onBack }){
       <div style={s.bar}>
         <button style={s.backBtn} onClick={onBack}>← Назад</button>
         <div style={s.info}>
-          <span style={{fontSize:20}}>{meta.icon}</span>
+          <span style={{fontSize:18}}>{meta.icon}</span>
           <div>
             <div style={s.name}>{meta.name}</div>
             <div style={s.sub}>{meta.sub}</div>
           </div>
         </div>
-        <div style={{...s.status, color: loaded?'#10b981':'#f59e0b'}}>
-          <span style={{...s.dot, background:loaded?'#10b981':'#f59e0b',
+        <div style={{...s.status, color:loaded?'#10b981':'#f59e0b'}}>
+          <span style={{...s.dot,background:loaded?'#10b981':'#f59e0b',
             boxShadow:`0 0 6px ${loaded?'#10b981':'#f59e0b'}`}}/>
-          {loaded ? 'Активна' : 'Запуск...'}
+          {loaded?'Активна':'Запуск...'}
         </div>
-        <button style={s.iconBtn} onClick={handleRetry} title="Перезапустити">↺</button>
-        <button style={s.iconBtn} onClick={openFullscreen} title="Повний екран">⛶</button>
+        <button style={s.iconBtn} onClick={retry} title="Перезапустити">↺</button>
+        <button style={s.iconBtn} onClick={()=>setShowTools(t=>!t)} title="Інструменти">🛠</button>
+        <button style={s.iconBtn} onClick={fullscreen} title="Повний екран">⛶</button>
       </div>
+
+      {/* Mobile controls */}
+      {showTools && loaded && (
+        <div style={s.tools}>
+          <button style={s.tool} onClick={()=>setZoom(z=>Math.min(z+0.15,2))} title="Збільшити">🔍+</button>
+          <button style={s.tool} onClick={()=>setZoom(z=>Math.max(z-0.15,0.5))} title="Зменшити">🔍−</button>
+          <button style={s.tool} onClick={()=>setZoom(1)} title="Скинути масштаб">⊡</button>
+          <div style={s.toolDiv}/>
+          <button style={s.tool}
+            onClick={()=>iframeRef.current?.contentWindow?.postMessage('keyboardShow',  '*')}
+            title="Клавіатура">⌨️</button>
+          <button style={s.tool}
+            onClick={()=>iframeRef.current?.contentWindow?.postMessage('scroll','*')}
+            title="Скрол режим">☰</button>
+          <div style={s.toolDiv}/>
+          <span style={s.zoomLabel}>{Math.round(zoom*100)}%</span>
+        </div>
+      )}
 
       {/* Content */}
       <div style={s.content}>
-        {/* Loading overlay */}
-        {!loaded && (
+        {!loaded&&(
           <div style={s.overlay}>
             <div style={s.card}>
-              <div style={{fontSize:52}}>{meta.icon}</div>
+              <div style={{fontSize:48}}>{meta.icon}</div>
               <div style={s.spinner}/>
-              <p style={s.loadTitle}>Запускаємо {meta.name}...</p>
-              {countdown > 0 ? (
-                <div style={s.countWrap}>
-                  <div style={s.countNum}>{countdown}</div>
-                  <div style={s.countLabel}>секунд</div>
-                </div>
-              ) : (
-                <p style={s.countLabel}>Майже готово...</p>
-              )}
-              <div style={s.progressBar}>
-                <div style={{
-                  ...s.progressFill,
-                  width: `${Math.max(5, 100 - (countdown/(meta.boot||25))*100)}%`,
-                }}/>
-              </div>
-              <p style={s.hint}>
-                {retries === 0
-                  ? 'Якщо екран чорний після завантаження — натисни ↺ вгорі'
-                  : `Спроба ${retries+1}...`}
-              </p>
-              <button style={s.retryBtn} onClick={handleRetry}>
-                ↺ Перезапустити з'єднання
-              </button>
+              <p style={s.lt}>Запускаємо {meta.name}...</p>
+              {countdown>0
+                ?<div style={s.cw}><div style={s.cn}>{countdown}</div><div style={s.cs}>секунд</div></div>
+                :<p style={s.cs}>Майже готово...</p>}
+              <div style={s.pb}><div style={{...s.pf,
+                width:`${Math.max(5,100-(countdown/(meta.boot||25))*100)}%`}}/></div>
+              <p style={s.hint}>Якщо екран чорний після завантаження — натисни ↺</p>
+              <button style={s.retryBtn} onClick={retry}>↺ Перепідключити</button>
             </div>
           </div>
         )}
-
-        {/* noVNC iframe */}
-        {vncUrl && (
-          <iframe
-            ref={iframeRef}
-            key={retries}
-            src={vncUrl}
-            style={{...s.frame, opacity: loaded ? 1 : 0}}
+        {vncUrl&&(
+          <iframe ref={iframeRef} key={retries} src={vncUrl}
+            style={{...s.frame, opacity:loaded?1:0,
+              transform:`scale(${zoom})`, transformOrigin:'top left',
+              width:`${100/zoom}%`, height:`${100/zoom}%`}}
             onLoad={handleLoad}
             allow="clipboard-read; clipboard-write; fullscreen"
-            title={meta.name}
-          />
+            title={meta.name}/>
         )}
       </div>
-
       <style>{`
-        @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-        @keyframes fadeIn{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+        @keyframes sp{to{transform:rotate(360deg)}}
+        @keyframes dp{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.5)}50%{box-shadow:0 0 0 5px rgba(16,185,129,0)}}
       `}</style>
     </div>
   );
 }
 
-const s = {
-  root:{ display:'flex', flexDirection:'column', height:'100vh',
-    background:'#030308', fontFamily:"'Space Grotesk',sans-serif", color:'#fff' },
-  bar:{ display:'flex', alignItems:'center', gap:10, padding:'10px 16px',
-    background:'rgba(255,255,255,.04)', borderBottom:'1px solid rgba(255,255,255,.07)',
-    flexShrink:0 },
-  backBtn:{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff', padding:'7px 14px', borderRadius:8, cursor:'pointer',
-    fontSize:13, fontFamily:"'Space Grotesk',sans-serif", flexShrink:0 },
-  info:{ flex:1, display:'flex', alignItems:'center', gap:10 },
-  name:{ fontSize:14, fontWeight:600 },
-  sub:{ fontSize:11, color:'rgba(255,255,255,.35)', fontFamily:"'Inter',sans-serif" },
-  status:{ display:'flex', alignItems:'center', gap:6, fontSize:12,
-    fontFamily:"'Inter',sans-serif", flexShrink:0 },
-  dot:{ display:'inline-block', width:8, height:8, borderRadius:'50%' },
-  iconBtn:{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff', width:34, height:34, borderRadius:8, cursor:'pointer', fontSize:15,
-    display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 },
-  content:{ flex:1, position:'relative', overflow:'hidden' },
-  overlay:{ position:'absolute', inset:0, zIndex:10, background:'#030308',
-    display:'flex', alignItems:'center', justifyContent:'center' },
-  card:{ display:'flex', flexDirection:'column', alignItems:'center', gap:16,
-    padding:'40px 32px', background:'rgba(255,255,255,.04)',
-    border:'1px solid rgba(255,255,255,.09)', borderRadius:24,
-    animation:'fadeIn .4s ease', maxWidth:320, width:'90%', textAlign:'center' },
-  spinner:{ width:44, height:44, border:'3px solid rgba(255,255,255,.08)',
-    borderTopColor:'#818cf8', borderRadius:'50%', animation:'spin .9s linear infinite' },
-  loadTitle:{ fontSize:17, fontWeight:600, color:'rgba(255,255,255,.85)' },
-  countWrap:{ display:'flex', flexDirection:'column', alignItems:'center', gap:4 },
-  countNum:{ fontSize:48, fontWeight:700, color:'#818cf8', lineHeight:1,
-    fontVariantNumeric:'tabular-nums' },
-  countLabel:{ fontSize:12, color:'rgba(255,255,255,.35)',
-    fontFamily:"'Inter',sans-serif" },
-  progressBar:{ width:'100%', height:4, background:'rgba(255,255,255,.08)',
-    borderRadius:2, overflow:'hidden' },
-  progressFill:{ height:'100%',
-    background:'linear-gradient(90deg,#4f46e5,#818cf8)',
-    borderRadius:2, transition:'width 1s linear' },
-  hint:{ fontSize:12, color:'rgba(255,255,255,.3)',
-    fontFamily:"'Inter',sans-serif", lineHeight:1.5 },
-  retryBtn:{ background:'rgba(129,140,248,.15)', border:'1px solid rgba(129,140,248,.3)',
-    color:'#818cf8', padding:'9px 20px', borderRadius:10, cursor:'pointer',
-    fontSize:13, fontWeight:600, fontFamily:"'Space Grotesk',sans-serif" },
-  frame:{ position:'absolute', inset:0, width:'100%', height:'100%',
-    border:'none', transition:'opacity .5s ease' },
+const s={
+  root:{display:'flex',flexDirection:'column',height:'100vh',background:'#030308',
+    fontFamily:"'Space Grotesk',sans-serif",color:'#fff'},
+  bar:{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',
+    background:'rgba(255,255,255,.04)',borderBottom:'1px solid rgba(255,255,255,.07)',flexShrink:0},
+  backBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
+    color:'#fff',padding:'7px 12px',borderRadius:8,cursor:'pointer',fontSize:13,
+    fontFamily:"'Space Grotesk',sans-serif",flexShrink:0},
+  info:{flex:1,display:'flex',alignItems:'center',gap:8},
+  name:{fontSize:13,fontWeight:600},
+  sub:{fontSize:10,color:'rgba(255,255,255,.35)',fontFamily:"'Inter',sans-serif"},
+  status:{display:'flex',alignItems:'center',gap:6,fontSize:11,
+    fontFamily:"'Inter',sans-serif",flexShrink:0},
+  dot:{display:'inline-block',width:7,height:7,borderRadius:'50%'},
+  iconBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
+    color:'#fff',width:32,height:32,borderRadius:7,cursor:'pointer',fontSize:14,
+    display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0},
+  tools:{display:'flex',alignItems:'center',gap:6,padding:'6px 14px',
+    background:'rgba(255,255,255,.03)',borderBottom:'1px solid rgba(255,255,255,.05)',
+    flexShrink:0,overflowX:'auto'},
+  tool:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
+    color:'#fff',padding:'5px 10px',borderRadius:7,cursor:'pointer',fontSize:13,
+    whiteSpace:'nowrap',fontFamily:"'Inter',sans-serif"},
+  toolDiv:{width:1,height:20,background:'rgba(255,255,255,.1)',margin:'0 2px',flexShrink:0},
+  zoomLabel:{fontSize:12,color:'rgba(255,255,255,.4)',fontFamily:"'Inter',sans-serif",
+    padding:'0 4px'},
+  content:{flex:1,position:'relative',overflow:'hidden'},
+  overlay:{position:'absolute',inset:0,zIndex:10,background:'#030308',
+    display:'flex',alignItems:'center',justifyContent:'center'},
+  card:{display:'flex',flexDirection:'column',alignItems:'center',gap:14,
+    padding:'36px 28px',background:'rgba(255,255,255,.04)',
+    border:'1px solid rgba(255,255,255,.08)',borderRadius:20,
+    maxWidth:300,width:'90%',textAlign:'center'},
+  spinner:{width:40,height:40,border:'3px solid rgba(255,255,255,.08)',
+    borderTopColor:'#818cf8',borderRadius:'50%',animation:'sp .9s linear infinite'},
+  lt:{fontSize:16,fontWeight:600,color:'rgba(255,255,255,.85)'},
+  cw:{display:'flex',flexDirection:'column',alignItems:'center',gap:2},
+  cn:{fontSize:44,fontWeight:700,color:'#818cf8',lineHeight:1,fontVariantNumeric:'tabular-nums'},
+  cs:{fontSize:12,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif"},
+  pb:{width:'100%',height:3,background:'rgba(255,255,255,.08)',borderRadius:2,overflow:'hidden'},
+  pf:{height:'100%',background:'linear-gradient(90deg,#4f46e5,#818cf8)',
+    borderRadius:2,transition:'width 1s linear'},
+  hint:{fontSize:11,color:'rgba(255,255,255,.25)',fontFamily:"'Inter',sans-serif",lineHeight:1.5},
+  retryBtn:{background:'rgba(129,140,248,.15)',border:'1px solid rgba(129,140,248,.3)',
+    color:'#818cf8',padding:'8px 18px',borderRadius:9,cursor:'pointer',
+    fontSize:13,fontWeight:600,fontFamily:"'Space Grotesk',sans-serif"},
+  frame:{position:'absolute',top:0,left:0,border:'none',
+    transition:'opacity .5s ease'},
 };
 
 CPEOF008
