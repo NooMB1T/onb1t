@@ -3,11 +3,12 @@ LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb x11vnc xauth dbus-x11 x11-xserver-utils \
+    tigervnc-standalone-server \
+    x11-xserver-utils xauth dbus-x11 \
     openbox tint2 feh \
     thunar mousepad xterm \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
-    imagemagick bzip2 ca-certificates \
+    imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
@@ -35,7 +36,7 @@ RUN mkdir -p /opt/novnc \
 
 RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx /tmp/xdg \
-    && mkdir -p /root/.config/openbox \
+    && mkdir -p /root/.config/openbox /root/.vnc \
     && rm -f /etc/nginx/sites-enabled/default
 
 RUN cat > /app/frontend/package.json << 'CPEOF000'
@@ -971,110 +972,174 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
 CPEOF011
 
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, spawnSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 
 const CONFIGS = {
-  browser: { display:':1', vncPort:5901, wsPort:6901, res:'1920x1080x24' },
-  desktop: { display:':2', vncPort:5902, wsPort:6902, res:'1920x1080x24' },
-  phone:   { display:':3', vncPort:5903, wsPort:6903, res:'412x915x24'   },
+  browser: { display:':1', vncPort:5901, wsPort:6901, geo:'1920x1080' },
+  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1920x1080' },
+  phone:   { display:':3', vncPort:5903, wsPort:6903, geo:'412x915'   },
 };
 const sessions = {};
-const FF = '/opt/firefox/firefox';
+
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function sp(cmd,args,env={}){
-  const p=spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
-  p.on('error',e=>console.error(`[${cmd}]:`,e.message));
+
+function sp(cmd, args, env={}){
+  const p = spawn(cmd, args, {
+    env: {...process.env, ...env},
+    stdio: 'ignore', detached: false,
+  });
+  p.on('error', e => console.error(`[${cmd}] error:`, e.message));
   return p;
+}
+
+// Чекає поки порт стане доступним
+async function waitPort(port, tries=40){
+  for(let i=0; i<tries; i++){
+    try{
+      execSync(`bash -c 'echo > /dev/tcp/127.0.0.1/${port}'`, {timeout:500,stdio:'ignore'});
+      console.log(`  ✓ port ${port} ready`);
+      return true;
+    }catch{}
+    await sleep(300);
+  }
+  console.error(`  ✗ port ${port} timeout`);
+  return false;
+}
+
+// Чекає поки X display стане доступним
+async function waitDisplay(display, tries=30){
+  for(let i=0; i<tries; i++){
+    const r = spawnSync('xdpyinfo', ['-display', display], {timeout:1000, stdio:'ignore'});
+    if(r.status === 0){ console.log(`  ✓ display ${display} ready`); return true; }
+    await sleep(300);
+  }
+  return false;
 }
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
-  const cfg=CONFIGS[type];
-  const procs={};
+  const cfg = CONFIGS[type];
+  const procs = {};
+  console.log(`\n▶ [${type}] starting...`);
 
-  // Xvfb
-  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
-  await sleep(1500);
+  // TigerVNC — один процес замість Xvfb+x11vnc
+  // Xvnc сам є і X сервером і VNC сервером
+  fs.mkdirSync('/root/.vnc', {recursive:true});
+  fs.writeFileSync('/root/.vnc/xstartup', '#!/bin/sh\nexec /bin/sh\n');
+  fs.chmodSync('/root/.vnc/xstartup', '755');
 
-  // Фон (без WM)
-  sp('xsetroot',['-solid','#0d1117'],{DISPLAY:cfg.display});
+  procs.vnc = sp('Xvnc', [
+    cfg.display,
+    '-geometry', cfg.geo,
+    '-depth', '24',
+    '-SecurityTypes', 'None',
+    '-localhost', 'no',
+    '-rfbport', String(cfg.vncPort),
+    '-dpi', '96',
+    '-desktop', `CloudPlay-${type}`,
+  ], { HOME:'/root' });
+
+  // Чекаємо поки VNC і X стануть готові
+  await waitDisplay(cfg.display);
+  await waitPort(cfg.vncPort);
+  await sleep(500);
+
+  // Фон
+  sp('xsetroot', ['-solid', '#0d1117', '-display', cfg.display]);
   await sleep(200);
 
-  if(type==='browser'){
-    // Openbox + Firefox повноекранний
-    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
-      {DISPLAY:cfg.display,HOME:'/root',GTK_THEME:'Arc-Dark'});
-    await sleep(800);
-    procs.browser=sp(FF,['--no-remote','--new-instance','--maximized',
-      '-url','https://www.google.com'],
-      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
-       GTK_THEME:'Arc-Dark',MOZ_ENABLE_WAYLAND:'0'});
-
-  } else if(type==='desktop'){
-    // Openbox + tint2 taskbar + Firefox
-    fs.mkdirSync('/tmp/xdg',{recursive:true});
-
-    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
-      {DISPLAY:cfg.display,HOME:'/root',GTK_THEME:'Arc-Dark',
-       XDG_RUNTIME_DIR:'/tmp/xdg'});
+  if(type === 'browser'){
+    // Openbox WM
+    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
+      DISPLAY: cfg.display, HOME:'/root', GTK_THEME:'Arc-Dark',
+    });
     await sleep(800);
 
-    procs.taskbar=sp('tint2',['-c','/app/tint2rc'],
-      {DISPLAY:cfg.display,HOME:'/root'});
+    // Firefox
+    procs.app = sp('firefox', [
+      '--no-remote', '--new-instance',
+      '-url', 'https://www.google.com',
+    ], {
+      DISPLAY: cfg.display, HOME:'/root',
+      MOZ_DISABLE_CONTENT_SANDBOX:'1',
+      MOZ_ENABLE_WAYLAND:'0',
+      GTK_THEME:'Arc-Dark',
+    });
+
+  } else if(type === 'desktop'){
+    fs.mkdirSync('/tmp/xdg', {recursive:true});
+    // Wallpaper
+    try{ execSync(`convert -size 1920x1080 gradient:"#0d1117-#1a2744" /tmp/wp.png`,{timeout:5000}); }catch{}
+
+    // Openbox WM
+    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
+      DISPLAY: cfg.display, HOME:'/root', GTK_THEME:'Arc-Dark',
+      XDG_RUNTIME_DIR:'/tmp/xdg',
+    });
+    await sleep(800);
+
+    // tint2 taskbar
+    procs.bar = sp('tint2', ['-c', '/app/tint2rc'], {
+      DISPLAY: cfg.display, HOME:'/root',
+    });
     await sleep(400);
 
     // Wallpaper
-    try{
-      execSync('convert -size 1920x1080 gradient:"#0d1117-#1a2744" /tmp/wp.png',{timeout:5000});
-      sp('feh',['--bg-scale','/tmp/wp.png'],{DISPLAY:cfg.display});
-    }catch{}
+    try{ sp('feh', ['--bg-scale', '/tmp/wp.png'], {DISPLAY: cfg.display}); }catch{}
 
-    // Firefox автозапуск
-    procs.browser=sp(FF,['--no-remote','--new-instance','https://www.google.com'],
-      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
-       GTK_THEME:'Arc-Dark',MOZ_ENABLE_WAYLAND:'0',XDG_RUNTIME_DIR:'/tmp/xdg'});
+    // Firefox
+    procs.app = sp('firefox', [
+      '--no-remote', '--new-instance', 'https://www.google.com',
+    ], {
+      DISPLAY: cfg.display, HOME:'/root',
+      MOZ_DISABLE_CONTENT_SANDBOX:'1',
+      MOZ_ENABLE_WAYLAND:'0',
+      GTK_THEME:'Arc-Dark',
+      XDG_RUNTIME_DIR:'/tmp/xdg',
+    });
 
-  } else if(type==='phone'){
-    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
-      {DISPLAY:cfg.display,HOME:'/root'});
-    await sleep(700);
-    procs.browser=sp(FF,['--no-remote','--new-instance','--kiosk',
-      'file:///app/backend/android.html'],
-      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
-       MOZ_ENABLE_WAYLAND:'0'});
+  } else {
+    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
+      DISPLAY: cfg.display, HOME:'/root',
+    });
+    await sleep(800);
+    procs.app = sp('firefox', [
+      '--no-remote', '--new-instance', '--kiosk',
+      'file:///app/backend/android.html',
+    ], {
+      DISPLAY: cfg.display, HOME:'/root',
+      MOZ_DISABLE_CONTENT_SANDBOX:'1',
+      MOZ_ENABLE_WAYLAND:'0',
+    });
   }
 
-  await sleep(type==='desktop'?6000:5000);
+  // websockify — підключається до VNC порту (вже відкритий Xvnc)
+  await sleep(2000);
+  procs.ws = sp('websockify', [String(cfg.wsPort), `localhost:${cfg.vncPort}`]);
+  await waitPort(cfg.wsPort);
 
-  procs.vnc=sp('x11vnc',['-display',cfg.display,'-forever','-nopw',
-    '-quiet','-shared','-rfbport',String(cfg.vncPort),
-    '-wait','20','-defer','10','-no6']);
-  await sleep(1200);
-
-  procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
-  await sleep(500);
-
-  sessions[type]={id:uuidv4(),type,procs,startTime:new Date()};
+  sessions[type] = {id:uuidv4(), type, procs, startTime:new Date()};
   console.log(`✅ [${type}] ready`);
   return sessions[type];
 }
 
 async function stopSession(type){
-  const s=sessions[type]; if(!s)return;
+  const s = sessions[type]; if(!s) return;
   for(const p of Object.values(s.procs).reverse())
-    try{if(p&&!p.killed)p.kill('SIGTERM');}catch{}
+    try{ if(p&&!p.killed) p.kill('SIGTERM'); }catch{}
   delete sessions[type];
+  await sleep(500);
 }
 
 function getAllStatus(){
-  const o={browser:{running:false},desktop:{running:false},phone:{running:false}};
-  for(const[t,s]of Object.entries(sessions))
-    o[t]=s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
+  const o = {browser:{running:false},desktop:{running:false},phone:{running:false}};
+  for(const [t,s] of Object.entries(sessions))
+    o[t] = s ? {running:true, id:s.id, startTime:s.startTime} : {running:false};
   return o;
 }
-module.exports={startSession,stopSession,getAllStatus};
+module.exports = {startSession, stopSession, getAllStatus};
 
 CPEOF012
 
@@ -1627,15 +1692,6 @@ background_color = #1f6feb 80
 border_color = #1f6feb 100
 
 CPEOF019
-
-RUN cat > /app/firefox.desktop << 'CPEOF020'
-[Desktop Entry]
-Name=Firefox
-Exec=/opt/firefox/firefox --new-window https://www.google.com
-Icon=firefox
-Type=Application
-
-CPEOF020
 
 RUN ln -sf /app/ob-rc.xml /root/.config/openbox/rc.xml     && ln -sf /app/ob-menu.xml /root/.config/openbox/menu.xml
 
