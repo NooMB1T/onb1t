@@ -2,33 +2,41 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
+# Базові пакети + XFCE
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tigervnc-standalone-server \
     x11-xserver-utils xauth dbus-x11 \
-    openbox tint2 feh \
-    thunar mousepad xterm \
+    xfce4 xfce4-terminal xfce4-goodies \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
+    thunar mousepad \
+    vlc qbittorrent \
+    openbox tint2 feh \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     python3 python3-pip \
-    wget curl unzip supervisor nginx \
+    wget curl unzip gnupg supervisor nginx \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN install -d -m 0755 /etc/apt/keyrings \
-    && wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg \
-       -O /etc/apt/keyrings/packages.mozilla.org.asc \
-    && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
-       > /etc/apt/sources.list.d/mozilla.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends firefox \
+# Google Chrome (не snap, реальний бінарник)
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Steam
+RUN dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y steam-installer \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
@@ -984,35 +992,21 @@ const CONFIGS = {
 const sessions = {};
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-
-function sp(cmd, args, env={}){
-  const p = spawn(cmd, args, {
-    env: {...process.env, ...env},
-    stdio: 'ignore', detached: false,
-  });
-  p.on('error', e => console.error(`[${cmd}] error:`, e.message));
+function sp(cmd,args,env={}){
+  const p=spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
+  p.on('error',e=>console.error(`[${cmd}]:`,e.message));
   return p;
 }
-
-// Чекає поки порт стане доступним
-async function waitPort(port, tries=40){
-  for(let i=0; i<tries; i++){
-    try{
-      execSync(`bash -c 'echo > /dev/tcp/127.0.0.1/${port}'`, {timeout:500,stdio:'ignore'});
-      console.log(`  ✓ port ${port} ready`);
-      return true;
-    }catch{}
+async function waitPort(port,tries=50){
+  for(let i=0;i<tries;i++){
+    try{ execSync(`bash -c 'echo > /dev/tcp/127.0.0.1/${port}'`,{timeout:500,stdio:'ignore'}); return true; }catch{}
     await sleep(300);
   }
-  console.error(`  ✗ port ${port} timeout`);
   return false;
 }
-
-// Чекає поки X display стане доступним
-async function waitDisplay(display, tries=30){
-  for(let i=0; i<tries; i++){
-    const r = spawnSync('xdpyinfo', ['-display', display], {timeout:1000, stdio:'ignore'});
-    if(r.status === 0){ console.log(`  ✓ display ${display} ready`); return true; }
+async function waitDisplay(d,tries=40){
+  for(let i=0;i<tries;i++){
+    if(spawnSync('xdpyinfo',['-display',d],{timeout:1000,stdio:'ignore'}).status===0) return true;
     await sleep(300);
   }
   return false;
@@ -1020,126 +1014,79 @@ async function waitDisplay(display, tries=30){
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
-  const cfg = CONFIGS[type];
-  const procs = {};
-  console.log(`\n▶ [${type}] starting...`);
+  const cfg=CONFIGS[type];
+  const procs={};
+  console.log(`▶ [${type}]...`);
 
-  // TigerVNC — один процес замість Xvfb+x11vnc
-  // Xvnc сам є і X сервером і VNC сервером
-  fs.mkdirSync('/root/.vnc', {recursive:true});
-  fs.writeFileSync('/root/.vnc/xstartup', '#!/bin/sh\nexec /bin/sh\n');
-  fs.chmodSync('/root/.vnc/xstartup', '755');
+  // TigerVNC — X + VNC в одному
+  fs.mkdirSync('/root/.vnc',{recursive:true});
+  procs.vnc=sp('Xvnc',[cfg.display,
+    '-geometry',cfg.geo,'-depth','24',
+    '-SecurityTypes','None','-localhost','no',
+    '-rfbport',String(cfg.vncPort),'-dpi','96'],{HOME:'/root'});
 
-  procs.vnc = sp('Xvnc', [
-    cfg.display,
-    '-geometry', cfg.geo,
-    '-depth', '24',
-    '-SecurityTypes', 'None',
-    '-localhost', 'no',
-    '-rfbport', String(cfg.vncPort),
-    '-dpi', '96',
-    '-desktop', `CloudPlay-${type}`,
-  ], { HOME:'/root' });
-
-  // Чекаємо поки VNC і X стануть готові
   await waitDisplay(cfg.display);
   await waitPort(cfg.vncPort);
-  await sleep(500);
+  await sleep(300);
 
-  // Фон
-  sp('xsetroot', ['-solid', '#0d1117', '-display', cfg.display]);
-  await sleep(200);
+  sp('xsetroot',['-solid','#1a1a2e','-display',cfg.display]);
 
-  if(type === 'browser'){
-    // Openbox WM
-    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
-      DISPLAY: cfg.display, HOME:'/root', GTK_THEME:'Arc-Dark',
-    });
-    await sleep(800);
+  if(type==='browser'){
+    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
+      {DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(600);
+    procs.app=sp('google-chrome',[
+      '--no-sandbox','--disable-dev-shm-usage',
+      '--disable-gpu','--start-maximized',
+      'https://www.google.com'
+    ],{DISPLAY:cfg.display,HOME:'/root'});
 
-    // Firefox
-    procs.app = sp('firefox', [
-      '--no-remote', '--new-instance',
-      '-url', 'https://www.google.com',
-    ], {
-      DISPLAY: cfg.display, HOME:'/root',
-      MOZ_DISABLE_CONTENT_SANDBOX:'1',
-      MOZ_ENABLE_WAYLAND:'0',
-      GTK_THEME:'Arc-Dark',
-    });
-
-  } else if(type === 'desktop'){
-    fs.mkdirSync('/tmp/xdg', {recursive:true});
-    // Wallpaper
-    try{ execSync(`convert -size 1920x1080 gradient:"#0d1117-#1a2744" /tmp/wp.png`,{timeout:5000}); }catch{}
-
-    // Openbox WM
-    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
-      DISPLAY: cfg.display, HOME:'/root', GTK_THEME:'Arc-Dark',
-      XDG_RUNTIME_DIR:'/tmp/xdg',
-    });
-    await sleep(800);
-
-    // tint2 taskbar
-    procs.bar = sp('tint2', ['-c', '/app/tint2rc'], {
-      DISPLAY: cfg.display, HOME:'/root',
-    });
-    await sleep(400);
-
-    // Wallpaper
-    try{ sp('feh', ['--bg-scale', '/tmp/wp.png'], {DISPLAY: cfg.display}); }catch{}
-
-    // Firefox
-    procs.app = sp('firefox', [
-      '--no-remote', '--new-instance', 'https://www.google.com',
-    ], {
-      DISPLAY: cfg.display, HOME:'/root',
-      MOZ_DISABLE_CONTENT_SANDBOX:'1',
-      MOZ_ENABLE_WAYLAND:'0',
-      GTK_THEME:'Arc-Dark',
-      XDG_RUNTIME_DIR:'/tmp/xdg',
-    });
+  } else if(type==='desktop'){
+    fs.mkdirSync('/tmp/xdg',{recursive:true});
+    // XFCE — стабільний, перевірений
+    procs.wm=sp('bash',['-c',`
+      export DISPLAY=${cfg.display} HOME=/root XDG_RUNTIME_DIR=/tmp/xdg
+      export DBUS_SESSION_BUS_ADDRESS=autolaunch:
+      # Темна тема Arc-Dark
+      xfconf-query -c xsettings -p /Net/ThemeName -s Arc-Dark 2>/dev/null &
+      xfconf-query -c xsettings -p /Net/IconThemeName -s Papirus-Dark 2>/dev/null &
+      xfconf-query -c xfwm4 -p /general/theme -s Arc-Dark 2>/dev/null &
+      dbus-run-session -- startxfce4
+    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg'});
 
   } else {
-    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'], {
-      DISPLAY: cfg.display, HOME:'/root',
-    });
-    await sleep(800);
-    procs.app = sp('firefox', [
-      '--no-remote', '--new-instance', '--kiosk',
-      'file:///app/backend/android.html',
-    ], {
-      DISPLAY: cfg.display, HOME:'/root',
-      MOZ_DISABLE_CONTENT_SANDBOX:'1',
-      MOZ_ENABLE_WAYLAND:'0',
-    });
+    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
+      {DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(600);
+    procs.app=sp('google-chrome',[
+      '--no-sandbox','--disable-dev-shm-usage','--disable-gpu',
+      '--app=file:///app/backend/android.html',
+      '--window-size=412,915','--window-position=0,0'
+    ],{DISPLAY:cfg.display,HOME:'/root'});
   }
 
-  // websockify — підключається до VNC порту (вже відкритий Xvnc)
-  await sleep(2000);
-  procs.ws = sp('websockify', [String(cfg.wsPort), `localhost:${cfg.vncPort}`]);
+  await sleep(type==='desktop'?5000:4000);
+  procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await waitPort(cfg.wsPort);
 
-  sessions[type] = {id:uuidv4(), type, procs, startTime:new Date()};
+  sessions[type]={id:uuidv4(),type,procs,startTime:new Date()};
   console.log(`✅ [${type}] ready`);
   return sessions[type];
 }
 
 async function stopSession(type){
-  const s = sessions[type]; if(!s) return;
+  const s=sessions[type]; if(!s)return;
   for(const p of Object.values(s.procs).reverse())
-    try{ if(p&&!p.killed) p.kill('SIGTERM'); }catch{}
+    try{if(p&&!p.killed)p.kill('SIGTERM');}catch{}
   delete sessions[type];
-  await sleep(500);
 }
-
 function getAllStatus(){
-  const o = {browser:{running:false},desktop:{running:false},phone:{running:false}};
-  for(const [t,s] of Object.entries(sessions))
-    o[t] = s ? {running:true, id:s.id, startTime:s.startTime} : {running:false};
+  const o={browser:{running:false},desktop:{running:false},phone:{running:false}};
+  for(const[t,s]of Object.entries(sessions))
+    o[t]=s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
   return o;
 }
-module.exports = {startSession, stopSession, getAllStatus};
+module.exports={startSession,stopSession,getAllStatus};
 
 CPEOF012
 
