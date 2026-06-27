@@ -2,12 +2,13 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
+# Базові пакети
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 x11-xserver-utils \
     openbox tint2 feh \
     thunar mousepad xterm \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
-    imagemagick bzip2 \
+    imagemagick bzip2 ca-certificates \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
@@ -15,16 +16,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Firefox — офіційний Mozilla apt репозиторій (НЕ snap)
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg \
+       -O /etc/apt/keyrings/packages.mozilla.org.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+       > /etc/apt/sources.list.d/mozilla.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends firefox \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN wget -q "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
-    -O /tmp/ff.tar.bz2 \
-    && tar xjf /tmp/ff.tar.bz2 -C /opt/ \
-    && rm /tmp/ff.tar.bz2 \
-    && ln -sf /opt/firefox/firefox /usr/local/bin/firefox
-
+# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
