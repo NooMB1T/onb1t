@@ -2,13 +2,11 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Пакети: GNOME + інструменти
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 \
-    gnome-shell gnome-session gnome-terminal nautilus \
-    yaru-theme-gtk yaru-theme-icon \
+    mate-desktop-environment arc-theme papirus-icon-theme \
     chromium-browser \
-    openbox xterm imagemagick \
+    openbox imagemagick \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
@@ -989,97 +987,92 @@ const fs = require('fs');
 const CONFIGS = {
   browser: { display:':1', vncPort:5901, wsPort:6901, res:'1920x1080x24' },
   desktop: { display:':2', vncPort:5902, wsPort:6902, res:'1920x1080x24' },
-  phone:   { display:':3', vncPort:5903, wsPort:6903, res:'1080x1920x24' },
+  phone:   { display:':3', vncPort:5903, wsPort:6903, res:'412x915x24'   },
 };
 const sessions = { browser:null, desktop:null, phone:null };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function sp(cmd,args,env={}){
-  const p = spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
+  const p=spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
   p.on('error',e=>console.error(`[${cmd}]:`,e.message));
   return p;
 }
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
-  const cfg = CONFIGS[type];
-  const procs = {};
-  console.log(`▶ [${type}] starting...`);
+  const cfg=CONFIGS[type];
+  const procs={};
+  console.log(`▶ [${type}]...`);
 
-  // Xvfb
-  procs.xvfb = sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
+  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
   await sleep(1500);
 
-  if(type === 'browser'){
-    // Без WM — тільки Chromium на весь екран
-    procs.app = sp('chromium-browser',[
+  if(type==='browser'){
+    // Chromium на весь екран — без WM, без зайвого
+    procs.app=sp('chromium-browser',[
       '--no-sandbox','--disable-dev-shm-usage',
-      '--disable-gpu-sandbox','--use-gl=swiftshader',
-      '--ignore-gpu-blocklist','--in-process-gpu',
-      '--disable-extensions','--no-first-run',
-      '--window-size=1920,1080','--start-maximized',
+      '--disable-gpu',                    // повністю вимикаємо GPU
+      '--disable-software-rasterizer',    // форсуємо CPU рендер
+      '--no-first-run','--disable-extensions',
+      '--disable-background-networking',
+      '--window-size=1920,1080',
+      '--start-maximized',
+      '--window-position=0,0',
       'https://www.google.com',
-    ],{DISPLAY:cfg.display,HOME:'/root'});
+    ],{DISPLAY:cfg.display,HOME:'/root',
+       LIBGL_ALWAYS_SOFTWARE:'1',GALLIUM_DRIVER:'softpipe'});
 
-  } else if(type === 'desktop'){
+  } else if(type==='desktop'){
+    // MATE Desktop — GNOME-стиль, VNC-сумісний
     fs.mkdirSync('/tmp/xdg',{recursive:true});
     fs.mkdirSync('/root/.config',{recursive:true});
 
-    // Wallpaper
-    try{ execSync('convert -size 1920x1080 gradient:"#0d1117-#161b22" /tmp/wp.png',{timeout:5000}); }catch{}
+    // Генеруємо wallpaper
+    try{ execSync('convert -size 1920x1080 gradient:"#0d1117-#1c2333" /tmp/wp.png',{timeout:5000}); }catch{}
 
-    procs.dbus = sp('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
-    await sleep(700);
+    procs.dbus=sp('bash',['-c','mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
+    await sleep(600);
 
-    // GNOME (з fallback на XFCE якщо не встановлено)
-    procs.wm = sp('bash',['-c',`
+    procs.wm=sp('bash',['-c',`
       export DISPLAY=${cfg.display}
       export HOME=/root
-      export XDG_SESSION_TYPE=x11
-      export GDK_BACKEND=x11
       export XDG_RUNTIME_DIR=/tmp/xdg
-      export GNOME_SHELL_SESSION_MODE=ubuntu
-      # Темна тема + wallpaper після запуску (через 5с)
-      (sleep 5
-       gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null
-       gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-dark' 2>/dev/null
-       gsettings set org.gnome.desktop.background picture-uri 'file:///tmp/wp.png' 2>/dev/null
-       gsettings set org.gnome.desktop.background picture-uri-dark 'file:///tmp/wp.png' 2>/dev/null
-       gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+      export DBUS_SESSION_BUS_ADDRESS=autolaunch:
+      # Встановлюємо Arc-Dark тему після запуску
+      (sleep 4
+       gsettings set org.mate.interface gtk-theme 'Arc-Dark' 2>/dev/null
+       gsettings set org.mate.interface icon-theme 'Papirus-Dark' 2>/dev/null
+       gsettings set org.mate.Marco.general theme 'Arc-Dark' 2>/dev/null
+       gsettings set org.mate.screensaver lock-enabled false 2>/dev/null
+       [ -f /tmp/wp.png ] && gsettings set org.mate.background picture-filename '/tmp/wp.png' 2>/dev/null
       ) &
-      # Запуск GNOME → fallback XFCE
-      dbus-run-session -- gnome-session --session=ubuntu 2>/tmp/g.log ||
-      dbus-run-session -- gnome-session 2>/tmp/g2.log ||
-      startxfce4 2>/tmp/x.log
-    `],{DISPLAY:cfg.display,HOME:'/root',XDG_SESSION_TYPE:'x11',GDK_BACKEND:'x11',XDG_RUNTIME_DIR:'/tmp/xdg'});
+      dbus-run-session -- mate-session 2>/tmp/mate.log
+    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg'});
 
-  } else if(type === 'phone'){
-    // Мобільний Chromium з Android User-Agent — реальний телефон в браузері
-    procs.wm = sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
-    await sleep(800);
-
-    procs.app = sp('chromium-browser',[
+  } else if(type==='phone'){
+    // Власний Android UI — HTML сторінка в Chromium kiosk
+    procs.wm=sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(700);
+    procs.app=sp('chromium-browser',[
       '--no-sandbox','--disable-dev-shm-usage',
-      '--disable-gpu-sandbox','--use-gl=swiftshader',
-      '--ignore-gpu-blocklist','--in-process-gpu',
+      '--disable-gpu','--disable-software-rasterizer',
       '--no-first-run','--disable-extensions',
+      '--app=file:///app/backend/android.html',
       '--window-size=412,915',
-      '--window-position=334,2',
-      '--user-agent=Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.210 Mobile Safari/537.36',
-      '--force-device-scale-factor=2',
-      'https://m.google.com',
-    ],{DISPLAY:cfg.display,HOME:'/root'});
+      '--window-position=0,0',
+    ],{DISPLAY:cfg.display,HOME:'/root',
+       LIBGL_ALWAYS_SOFTWARE:'1',GALLIUM_DRIVER:'softpipe'});
   }
 
-  await sleep(type==='desktop'?5000:2800);
+  await sleep(type==='desktop'?5000:3000);
 
-  procs.vnc = sp('x11vnc',[
+  procs.vnc=sp('x11vnc',[
     '-display',cfg.display,'-forever','-nopw','-quiet','-shared',
-    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10','-no6',
+    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10',
   ]);
   await sleep(1000);
 
-  procs.ws = sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
+  procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await sleep(500);
 
   sessions[type]={id:uuidv4(),type,procs,startTime:new Date()};
@@ -1196,7 +1189,205 @@ app.listen(PORT, '127.0.0.1', () => {
 
 CPEOF013
 
-RUN cat > /app/nginx.conf << 'CPEOF014'
+RUN cat > /app/backend/android.html << 'CPEOF014'
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=412,initial-scale=1">
+<title>CloudPlay Phone</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{width:412px;height:915px;overflow:hidden;font-family:'Segoe UI',Roboto,sans-serif;background:#000;user-select:none}
+
+/* WALLPAPER */
+.wp{position:absolute;inset:0;background:linear-gradient(160deg,#0a0a1e 0%,#1a0533 40%,#0d1f3c 100%)}
+.wp::after{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 30% 60%,rgba(99,102,241,.25) 0%,transparent 60%),
+             radial-gradient(ellipse at 80% 20%,rgba(139,92,246,.2) 0%,transparent 50%)}
+
+/* STATUS BAR */
+.sb{position:absolute;top:0;left:0;right:0;height:28px;z-index:100;
+  padding:0 16px;display:flex;align-items:center;justify-content:space-between}
+.sb-time{font-size:13px;font-weight:700;color:#fff}
+.sb-icons{display:flex;gap:5px;align-items:center;font-size:12px;color:#fff}
+
+/* DATE WIDGET */
+.date-widget{position:absolute;top:38px;left:0;right:0;text-align:center;z-index:10}
+.date-time{font-size:52px;font-weight:200;color:#fff;letter-spacing:-2px;line-height:1}
+.date-sub{font-size:14px;color:rgba(255,255,255,.6);margin-top:4px;font-weight:400}
+
+/* NOTIFICATION PILL */
+.notif{position:absolute;top:140px;left:20px;right:20px;z-index:10;
+  background:rgba(255,255,255,.1);backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:12px 16px;
+  display:flex;align-items:center;gap:12px;cursor:pointer}
+.notif-icon{font-size:20px}
+.notif-text{flex:1}
+.notif-app{font-size:11px;color:rgba(255,255,255,.5);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.notif-msg{font-size:13px;color:#fff;margin-top:2px}
+.notif-time{font-size:11px;color:rgba(255,255,255,.4)}
+
+/* APP GRID */
+.apps{position:absolute;top:220px;left:0;right:0;padding:0 16px;
+  display:grid;grid-template-columns:repeat(4,1fr);gap:16px 8px;z-index:10}
+.app{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;padding:6px 4px;border-radius:16px;transition:background .15s}
+.app:active{background:rgba(255,255,255,.1)}
+.app-i{width:58px;height:58px;border-radius:16px;display:flex;align-items:center;justify-content:center;
+  font-size:28px;box-shadow:0 4px 20px rgba(0,0,0,.4);flex-shrink:0}
+.app-l{font-size:11px;color:rgba(255,255,255,.9);text-shadow:0 1px 6px rgba(0,0,0,.8);font-weight:500;text-align:center}
+
+/* DOCK */
+.dock{position:absolute;bottom:28px;left:16px;right:16px;z-index:10;
+  background:rgba(255,255,255,.12);backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,.15);border-radius:28px;
+  padding:10px 20px;display:flex;justify-content:space-around;align-items:center}
+
+/* GESTURE BAR */
+.gesture{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
+  width:100px;height:4px;background:rgba(255,255,255,.35);border-radius:2px;z-index:200}
+
+/* BROWSER */
+.browser{position:absolute;inset:0;z-index:300;display:none;flex-direction:column;background:#1a1a2e}
+.browser.on{display:flex}
+.brow-bar{background:#111827;padding:8px 10px;display:flex;align-items:center;gap:8px;flex-shrink:0;
+  border-bottom:1px solid rgba(255,255,255,.08)}
+.brow-btn{background:none;border:none;color:#9ca3af;font-size:18px;cursor:pointer;padding:4px 6px;
+  border-radius:6px;display:flex;align-items:center;justify-content:center}
+.brow-btn:active{background:rgba(255,255,255,.1)}
+.brow-url{flex:1;padding:8px 14px;border-radius:20px;background:rgba(255,255,255,.08);
+  color:#fff;border:1px solid rgba(255,255,255,.12);font-size:13px;outline:none;font-family:inherit}
+.brow-tabs{display:flex;background:#111827;border-bottom:1px solid rgba(255,255,255,.06);overflow-x:auto;flex-shrink:0}
+.tab{padding:8px 14px;font-size:12px;color:rgba(255,255,255,.5);white-space:nowrap;cursor:pointer;
+  border-bottom:2px solid transparent;display:flex;align-items:center;gap:6px}
+.tab.active{color:#818cf8;border-bottom-color:#818cf8;background:rgba(129,140,248,.1)}
+.tab-close{font-size:14px;color:rgba(255,255,255,.3);margin-left:4px}
+.brow-frame{flex:1;border:none;background:#fff}
+.brow-navbar{background:#111827;padding:8px 20px;display:flex;justify-content:space-around;
+  border-top:1px solid rgba(255,255,255,.06);flex-shrink:0}
+
+@keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:none;opacity:1}}
+.browser.on{animation:slideUp .25s ease}
+</style>
+</head>
+<body>
+<div class="wp"></div>
+
+<div class="sb">
+  <span class="sb-time" id="st">00:00</span>
+  <div class="sb-icons">
+    <span>▲▲▲</span>
+    <span>🔋</span>
+  </div>
+</div>
+
+<div class="date-widget">
+  <div class="date-time" id="dt">00:00</div>
+  <div class="date-sub" id="ds">Субота, 14 червня</div>
+</div>
+
+<div class="notif" onclick="openApp('https://web.telegram.org')">
+  <div class="notif-icon">✈️</div>
+  <div class="notif-text">
+    <div class="notif-app">Telegram</div>
+    <div class="notif-msg">CloudPlay запущено! 🚀</div>
+  </div>
+  <div class="notif-time">зараз</div>
+</div>
+
+<div class="apps" id="apps">
+  <div class="app" onclick="openApp('https://www.google.com')">
+    <div class="app-i" style="background:#fff">🌐</div><div class="app-l">Chrome</div></div>
+  <div class="app" onclick="openApp('https://m.youtube.com')">
+    <div class="app-i" style="background:#ff0000">▶️</div><div class="app-l">YouTube</div></div>
+  <div class="app" onclick="openApp('https://web.telegram.org')">
+    <div class="app-i" style="background:#2196F3">✈️</div><div class="app-l">Telegram</div></div>
+  <div class="app" onclick="openApp('https://discord.com/app')">
+    <div class="app-i" style="background:#5865F2">💬</div><div class="app-l">Discord</div></div>
+  <div class="app" onclick="openApp('https://m.instagram.com')">
+    <div class="app-i" style="background:linear-gradient(135deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)">📸</div><div class="app-l">Instagram</div></div>
+  <div class="app" onclick="openApp('https://www.tiktok.com')">
+    <div class="app-i" style="background:#010101">🎵</div><div class="app-l">TikTok</div></div>
+  <div class="app" onclick="openApp('https://maps.google.com')">
+    <div class="app-i" style="background:#4CAF50">🗺️</div><div class="app-l">Maps</div></div>
+  <div class="app" onclick="openApp('https://gmail.com')">
+    <div class="app-i" style="background:#EA4335">📧</div><div class="app-l">Gmail</div></div>
+  <div class="app" onclick="openApp('https://open.spotify.com')">
+    <div class="app-i" style="background:#1DB954">🎧</div><div class="app-l">Spotify</div></div>
+  <div class="app" onclick="openApp('https://www.netflix.com')">
+    <div class="app-i" style="background:#E50914">🎬</div><div class="app-l">Netflix</div></div>
+  <div class="app" onclick="openApp('https://twitter.com')">
+    <div class="app-i" style="background:#000">✕</div><div class="app-l">X</div></div>
+  <div class="app" onclick="openApp('https://reddit.com')">
+    <div class="app-i" style="background:#FF4500">🤖</div><div class="app-l">Reddit</div></div>
+</div>
+
+<div class="dock">
+  <div class="app" onclick="openApp('https://www.google.com')" style="margin:0">
+    <div class="app-i" style="background:#fff;width:52px;height:52px">🌐</div></div>
+  <div class="app" onclick="openApp('https://m.youtube.com')" style="margin:0">
+    <div class="app-i" style="background:#ff0000;width:52px;height:52px">▶️</div></div>
+  <div class="app" onclick="openApp('https://web.telegram.org')" style="margin:0">
+    <div class="app-i" style="background:#2196F3;width:52px;height:52px">✈️</div></div>
+  <div class="app" onclick="openApp('https://gmail.com')" style="margin:0">
+    <div class="app-i" style="background:#EA4335;width:52px;height:52px">📧</div></div>
+</div>
+
+<div class="gesture"></div>
+
+<!-- BROWSER -->
+<div class="browser" id="br">
+  <div class="brow-bar">
+    <button class="brow-btn" onclick="closeBr()">✕</button>
+    <input class="brow-url" id="url" type="text" placeholder="Пошук або адреса..."
+      onkeydown="if(event.key==='Enter')go(this.value)">
+    <button class="brow-btn" onclick="go(document.getElementById('url').value)">→</button>
+  </div>
+  <div class="brow-tabs" id="tabs"></div>
+  <iframe class="brow-frame" id="frm" allow="*" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation"></iframe>
+  <div class="brow-navbar">
+    <button class="brow-btn" onclick="document.getElementById('frm').contentWindow.history.back()">←</button>
+    <button class="brow-btn" onclick="document.getElementById('frm').contentWindow.history.forward()">→</button>
+    <button class="brow-btn" onclick="document.getElementById('frm').src=document.getElementById('frm').src">↺</button>
+    <button class="brow-btn" onclick="closeBr()">⌂</button>
+  </div>
+</div>
+
+<script>
+function clock(){
+  const n=new Date();
+  const h=n.getHours().toString().padStart(2,'0');
+  const m=n.getMinutes().toString().padStart(2,'0');
+  document.getElementById('st').textContent=h+':'+m;
+  document.getElementById('dt').textContent=h+':'+m;
+  const days=['Неділя','Понеділок','Вівторок','Середа','Четвер',"П'ятниця",'Субота'];
+  const months=['січня','лютого','березня','квітня','травня','червня','липня','серпня','вересня','жовтня','листопада','грудня'];
+  document.getElementById('ds').textContent=days[n.getDay()]+', '+n.getDate()+' '+months[n.getMonth()];
+}
+clock(); setInterval(clock,1000);
+
+function openApp(url){
+  document.getElementById('url').value=url;
+  document.getElementById('frm').src=url;
+  document.getElementById('br').classList.add('on');
+}
+function closeBr(){
+  document.getElementById('br').classList.remove('on');
+  document.getElementById('frm').src='';
+}
+function go(v){
+  if(!v)return;
+  if(!v.startsWith('http'))v='https://'+v;
+  document.getElementById('url').value=v;
+  document.getElementById('frm').src=v;
+}
+</script>
+</body>
+</html>
+
+CPEOF014
+
+RUN cat > /app/nginx.conf << 'CPEOF015'
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
@@ -1277,9 +1468,9 @@ http {
     }
 }
 
-CPEOF014
+CPEOF015
 
-RUN cat > /app/supervisord.conf << 'CPEOF015'
+RUN cat > /app/supervisord.conf << 'CPEOF016'
 [supervisord]
 nodaemon=true
 logfile=/var/log/supervisor/supervisord.log
@@ -1307,7 +1498,7 @@ environment=NODE_ENV="production",API_PORT="3001"
 stdout_logfile=/var/log/supervisor/backend.log
 stderr_logfile=/var/log/supervisor/backend.err.log
 
-CPEOF015
+CPEOF016
 
 RUN cd /app/backend && npm install --production
 RUN cd /app/frontend && npm install && npm run build
