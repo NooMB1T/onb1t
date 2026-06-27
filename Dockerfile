@@ -2,7 +2,6 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Базові пакети
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc xauth dbus-x11 x11-xserver-utils \
     openbox tint2 feh \
@@ -16,7 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Firefox — офіційний Mozilla apt репозиторій (НЕ snap)
 RUN install -d -m 0755 /etc/apt/keyrings \
     && wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg \
        -O /etc/apt/keyrings/packages.mozilla.org.asc \
@@ -26,12 +24,10 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends firefox \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
@@ -608,7 +604,7 @@ export default function ServiceCard({ service:sv, status, loading, onStart, onRe
             onClick={onStart} disabled={loading}>
             {loading
               ?<><span style={spin}/>Запускаємо...</>
-              <>🚀 Запустити</>}
+              : <>🚀 Запустити</>}
           </button>
         )}
       </div>
