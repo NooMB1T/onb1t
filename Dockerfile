@@ -3,7 +3,7 @@ LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb x11vnc xauth dbus-x11 xsetroot \
+    xvfb x11vnc xauth dbus-x11 x11-xserver-utils \
     openbox tint2 feh \
     thunar mousepad xterm \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
@@ -19,7 +19,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Firefox — напряму з Mozilla, без snap
 RUN wget -q "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
     -O /tmp/ff.tar.bz2 \
     && tar xjf /tmp/ff.tar.bz2 -C /opt/ \
@@ -36,8 +35,6 @@ RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /root/.config/openbox \
     && rm -f /etc/nginx/sites-enabled/default
 
-# Налаштовуємо Openbox щоб читав правильні конфіги
-RUN mkdir -p /root/.config/openbox
 RUN cat > /app/frontend/package.json << 'CPEOF000'
 {
   "name": "cloudplay-frontend",
