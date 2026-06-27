@@ -2,15 +2,16 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Пакети (БЕЗ chromium-browser — це snap-обгортка, не працює в Docker)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb x11vnc xauth dbus-x11 \
-    mate-desktop-environment arc-theme papirus-icon-theme \
-    openbox imagemagick bzip2 \
+    xvfb x11vnc xauth dbus-x11 xsetroot \
+    openbox tint2 feh \
+    thunar mousepad xterm \
+    arc-theme papirus-icon-theme gtk2-engines-murrine \
+    imagemagick bzip2 \
+    libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     python3 python3-pip \
     wget curl unzip supervisor nginx \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
-    libdbus-glib-1-2 libgtk-3-0 libxt6 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -18,12 +19,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Firefox — пряме завантаження з Mozilla (не snap!)
+# Firefox — напряму з Mozilla, без snap
 RUN wget -q "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
     -O /tmp/ff.tar.bz2 \
     && tar xjf /tmp/ff.tar.bz2 -C /opt/ \
     && rm /tmp/ff.tar.bz2 \
-    && /opt/firefox/firefox --version || true
+    && ln -sf /opt/firefox/firefox /usr/local/bin/firefox
 
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
@@ -35,6 +36,8 @@ RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /root/.config/openbox \
     && rm -f /etc/nginx/sites-enabled/default
 
+# Налаштовуємо Openbox щоб читав правильні конфіги
+RUN mkdir -p /root/.config/openbox
 RUN cat > /app/frontend/package.json << 'CPEOF000'
 {
   "name": "cloudplay-frontend",
@@ -314,31 +317,30 @@ CPEOF005
 RUN cat > /app/frontend/src/components/Dashboard.jsx << 'CPEOF006'
 import { useState, useEffect } from 'react';
 import ServiceCard from './ServiceCard.jsx';
-import StatsBar from './StatsBar.jsx';
 
 const SERVICES = [
-  { id:'browser', label:'Cloud Browser', icon:'🌐',
-    desc:'Chromium у хмарі. Повний браузер без навантаження на девайс.',
-    accent:'#4f46e5', gradient:'linear-gradient(135deg,#4f46e5,#7c3aed)', glow:'rgba(79,70,229,0.6)' },
-  { id:'desktop', label:'Cloud PC', icon:'🖥️',
-    desc:'Ubuntu GNOME. Сучасний робочий стіл у браузері.',
-    accent:'#0ea5e9', gradient:'linear-gradient(135deg,#0ea5e9,#6366f1)', glow:'rgba(14,165,233,0.6)' },
-  { id:'phone', label:'Cloud Phone', icon:'📱',
-    desc:'Android-браузер з мобільним UA. Сайти як на телефоні.',
-    accent:'#10b981', gradient:'linear-gradient(135deg,#10b981,#0891b2)', glow:'rgba(16,185,129,0.6)' },
+  { id:'browser', icon:'🌐', label:'Cloud Browser',
+    desc:'Firefox у хмарі. Повний інтернет, нічого не грузить твій пристрій.',
+    accent:'#4f46e5', g:'linear-gradient(135deg,#4f46e5,#7c3aed)', glow:'#4f46e5' },
+  { id:'desktop', icon:'🖥️', label:'Cloud PC',
+    desc:'Повноцінний Linux ПК. Firefox, файли, термінал — все через браузер.',
+    accent:'#0ea5e9', g:'linear-gradient(135deg,#0ea5e9,#2563eb)', glow:'#0ea5e9' },
+  { id:'phone', icon:'📱', label:'Cloud Phone',
+    desc:'Android-інтерфейс у хмарі. Соцмережі, ютуб, месенджери.',
+    accent:'#10b981', g:'linear-gradient(135deg,#10b981,#059669)', glow:'#10b981' },
 ];
 
 export default function Dashboard({ onStart, onLogout, toast }) {
   const [loading, setLoading]   = useState(null);
   const [statuses, setStatuses] = useState({});
   const [time, setTime]         = useState(new Date());
+  const [hovered, setHovered]   = useState(null);
 
   useEffect(()=>{
     const poll=async()=>{
       try{
         const r=await fetch('/api/sessions/status',{
-          headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}
-        });
+          headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}});
         setStatuses(await r.json());
       }catch{}
     };
@@ -355,56 +357,62 @@ export default function Dashboard({ onStart, onLogout, toast }) {
   };
 
   const handleStop=async(type)=>{
-    await fetch(`/api/sessions/stop/${type}`,{
-      method:'POST',headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}
-    });
+    await fetch(`/api/sessions/stop/${type}`,{method:'POST',
+      headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}});
     setStatuses(s=>({...s,[type]:{running:false}}));
     toast('Сесію зупинено','info');
   };
 
-  const fmt=d=>d.toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'});
-  const fmtDate=d=>d.toLocaleDateString('uk-UA',{weekday:'short',day:'numeric',month:'short'});
-  const activeCount=Object.values(statuses).filter(s=>s?.running).length;
+  const pad=n=>String(n).padStart(2,'0');
+  const timeStr=`${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`;
+  const dateStr=time.toLocaleDateString('uk-UA',{weekday:'long',day:'numeric',month:'long'});
+  const active=Object.values(statuses).filter(s=>s?.running).length;
 
   return (
     <div style={s.root}>
-      <Mesh />
+      <BG />
 
-      {/* Header */}
-      <header style={s.header}>
-        <div style={s.logoRow}>
-          <span style={s.bolt}>⚡</span>
-          <span style={s.brand}>CloudPlay</span>
-          <span style={s.ver}>v1.3</span>
+      {/* TOP BAR */}
+      <header style={s.topbar}>
+        <div style={s.brand}>
+          <span style={s.brandIcon}>⚡</span>
+          <span style={s.brandName}>CloudPlay</span>
+          <span style={s.brandVer}>v1.3</span>
         </div>
-        <div style={s.headerCenter}>
-          <StatsBar statuses={statuses}/>
+        <div style={s.topCenter}>
+          {active>0 && (
+            <div style={s.activePill}>
+              <span style={s.activeDot}/>
+              {active} {active===1?'сесія активна':'сесії активні'}
+            </div>
+          )}
         </div>
-        <div style={s.headerRight}>
-          <div style={s.clock}>
-            <div style={s.clockTime}>{fmt(time)}</div>
-            <div style={s.clockDate}>{fmtDate(time)}</div>
+        <div style={s.topRight}>
+          <div style={s.clockBox}>
+            <div style={s.clockTime}>{timeStr}</div>
+            <div style={s.clockDate}>{dateStr}</div>
           </div>
-          <button style={s.logout} onClick={onLogout} title="Вийти">⏻</button>
+          <button style={s.logoutBtn} onClick={onLogout} title="Вийти">
+            <span>⏻</span>
+          </button>
         </div>
       </header>
 
-      {/* Hero */}
-      <main style={s.main}>
-        <div style={s.hero}>
-          <div style={s.heroBadge}>
-            <span style={{...s.heroDot, background: activeCount>0?'#10b981':'#4f46e5',
-              boxShadow:`0 0 8px ${activeCount>0?'#10b981':'#4f46e5'}`}}/>
-            {activeCount>0 ? `${activeCount} активних сесій` : 'Готовий до роботи'}
-          </div>
-          <h1 style={s.title}>
-            Твоя хмара,<br/>
-            <span style={s.grad}>твої правила</span>
+      {/* HERO */}
+      <div style={s.hero}>
+        <div style={s.heroInner}>
+          <p style={s.heroTag}>☁ Особистий хмарний сервер</p>
+          <h1 style={s.heroTitle}>
+            Запускай будь-що<br/>
+            <span style={s.heroGrad}>прямо в браузері</span>
           </h1>
-          <p style={s.sub}>Браузер, Linux та Android — все в одному місці.</p>
+          <p style={s.heroSub}>Firefox, Linux ПК або Android — без навантаження на твій девайс.</p>
         </div>
+      </div>
 
-        <div style={s.grid}>
+      {/* CARDS */}
+      <div style={s.cardsWrap}>
+        <div style={s.cards}>
           {SERVICES.map(sv=>(
             <ServiceCard key={sv.id} service={sv}
               status={statuses[sv.id]}
@@ -415,87 +423,99 @@ export default function Dashboard({ onStart, onLogout, toast }) {
             />
           ))}
         </div>
+      </div>
 
-        <div style={s.footer}>
-          <span style={s.footTxt}>CloudPlay v1.3</span>
-          <span style={s.footDivider}>·</span>
-          <span style={s.footTxt}>Особистий сервер</span>
-          <span style={s.footDivider}>·</span>
-          <span style={s.footTxt}>2-3 користувачі</span>
-        </div>
-      </main>
+      {/* FOOTER */}
+      <div style={s.foot}>
+        <span style={s.footItem}>CloudPlay v1.3</span>
+        <span style={s.footDot}>·</span>
+        <span style={s.footItem}>Приватний сервер</span>
+        <span style={s.footDot}>·</span>
+        <span style={s.footItem}>2-3 користувачі</span>
+      </div>
 
       <style>{`
-        @keyframes m1{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(80px,-60px)scale(1.15)}}
-        @keyframes m2{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(-60px,80px)scale(1.1)}}
-        @keyframes m3{0%,100%{transform:translate(-50%,-50%)scale(1)}50%{transform:translate(-50%,-50%)scale(1.2)}}
-        @keyframes m4{0%,100%{transform:translate(0,0)}50%{transform:translate(40px,50px)}}
-        @keyframes gS{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-        @keyframes fU{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+        @keyframes bg1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,-80px) scale(1.15)}}
+        @keyframes bg2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-80px,60px) scale(1.1)}}
+        @keyframes bg3{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
+        @keyframes bg4{0%,100%{transform:translate(0,0)}50%{transform:translate(50px,30px)}}
+        @keyframes gradAnim{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:none}}
+        @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.8)}}
+        @keyframes tickAnim{from{opacity:0}to{opacity:1}}
       `}</style>
     </div>
   );
 }
 
-function Mesh(){
-  return(
-    <div style={{position:'fixed',inset:0,pointerEvents:'none',overflow:'hidden',zIndex:0}}>
+function BG(){
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:0,overflow:'hidden',background:'#030308',pointerEvents:'none'}}>
+      <div style={{position:'absolute',width:1000,height:1000,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(79,70,229,.18) 0%,transparent 70%)',
+        top:-400,right:-300,filter:'blur(40px)',animation:'bg1 14s ease-in-out infinite'}}/>
       <div style={{position:'absolute',width:900,height:900,borderRadius:'50%',
-        background:'radial-gradient(circle,#4f46e5 0%,transparent 70%)',
-        opacity:.12,top:-400,right:-200,filter:'blur(60px)',animation:'m1 12s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:800,height:800,borderRadius:'50%',
-        background:'radial-gradient(circle,#7c3aed 0%,transparent 70%)',
-        opacity:.1,bottom:-300,left:-200,filter:'blur(60px)',animation:'m2 15s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:600,height:600,borderRadius:'50%',
-        background:'radial-gradient(circle,#0ea5e9 0%,transparent 70%)',
-        opacity:.08,top:'50%',left:'50%',filter:'blur(80px)',animation:'m3 10s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:400,height:400,borderRadius:'50%',
-        background:'radial-gradient(circle,#10b981 0%,transparent 70%)',
-        opacity:.07,bottom:100,right:100,filter:'blur(60px)',animation:'m4 13s ease-in-out infinite'}}/>
-      {/* Grid lines */}
+        background:'radial-gradient(circle,rgba(124,58,237,.14) 0%,transparent 70%)',
+        bottom:-400,left:-300,filter:'blur(40px)',animation:'bg2 17s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:700,height:700,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(14,165,233,.1) 0%,transparent 70%)',
+        top:'50%',left:'50%',filter:'blur(40px)',animation:'bg3 11s ease-in-out infinite'}}/>
+      <div style={{position:'absolute',width:500,height:500,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(16,185,129,.08) 0%,transparent 70%)',
+        bottom:50,right:50,filter:'blur(40px)',animation:'bg4 15s ease-in-out infinite'}}/>
       <div style={{position:'absolute',inset:0,
-        backgroundImage:'linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px)',
-        backgroundSize:'60px 60px'}}/>
+        backgroundImage:'linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px)',
+        backgroundSize:'64px 64px'}}/>
     </div>
   );
 }
 
 const s={
-  root:{minHeight:'100vh',background:'#030308',fontFamily:"'Space Grotesk',sans-serif",color:'#fff',position:'relative',overflow:'hidden'},
-  header:{position:'relative',zIndex:10,display:'flex',alignItems:'center',gap:16,padding:'14px 32px',
-    borderBottom:'1px solid rgba(255,255,255,0.06)',backdropFilter:'blur(20px)',
-    background:'rgba(3,3,8,0.7)'},
-  logoRow:{display:'flex',alignItems:'center',gap:8,flexShrink:0},
-  bolt:{fontSize:24,filter:'drop-shadow(0 0 12px rgba(255,200,0,.8))'},
-  brand:{fontSize:19,fontWeight:700,letterSpacing:'-.5px',color:'#fff'},
-  ver:{fontSize:10,color:'rgba(255,255,255,.3)',border:'1px solid rgba(255,255,255,.1)',
-    padding:'2px 7px',borderRadius:5,fontFamily:"'Inter',sans-serif",letterSpacing:'.5px'},
-  headerCenter:{flex:1,display:'flex',justifyContent:'center'},
-  headerRight:{display:'flex',alignItems:'center',gap:12,flexShrink:0},
-  clock:{textAlign:'right'},
-  clockTime:{fontSize:16,fontWeight:700,letterSpacing:'.5px',lineHeight:1.2,
-    fontVariantNumeric:'tabular-nums'},
-  clockDate:{fontSize:11,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif"},
-  logout:{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
-    color:'rgba(255,255,255,.5)',width:34,height:34,borderRadius:8,cursor:'pointer',fontSize:15},
-  main:{position:'relative',zIndex:10,maxWidth:1100,margin:'0 auto',padding:'56px 32px 48px'},
-  hero:{marginBottom:48,animation:'fU .5s ease'},
-  heroBadge:{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,
-    color:'rgba(255,255,255,.5)',fontFamily:"'Inter',sans-serif",
-    background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
-    padding:'6px 14px',borderRadius:20,marginBottom:20},
-  heroDot:{width:7,height:7,borderRadius:'50%',display:'inline-block'},
-  title:{fontSize:'clamp(32px,5.5vw,62px)',fontWeight:700,lineHeight:1.1,
-    letterSpacing:'-2px',marginBottom:14,margin:'0 0 14px'},
-  grad:{background:'linear-gradient(135deg,#818cf8 0%,#a78bfa 40%,#34d399 100%)',
-    backgroundSize:'200% 200%',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
-    animation:'gS 5s ease infinite'},
-  sub:{fontSize:16,lineHeight:1.6,color:'rgba(255,255,255,.38)',
-    fontFamily:"'Inter',sans-serif",marginTop:6},
-  grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:36},
-  footer:{display:'flex',alignItems:'center',gap:10},
-  footTxt:{fontSize:11,color:'rgba(255,255,255,.15)',fontFamily:"'Inter',sans-serif"},
-  footDivider:{color:'rgba(255,255,255,.1)',fontSize:11},
+  root:{minHeight:'100vh',background:'transparent',fontFamily:"'Space Grotesk',sans-serif",color:'#fff',
+    display:'flex',flexDirection:'column',position:'relative'},
+  topbar:{position:'relative',zIndex:10,display:'flex',alignItems:'center',
+    padding:'12px 32px',gap:16,
+    background:'rgba(3,3,8,.85)',backdropFilter:'blur(20px)',
+    borderBottom:'1px solid rgba(255,255,255,.06)'},
+  brand:{display:'flex',alignItems:'center',gap:8,flexShrink:0},
+  brandIcon:{fontSize:22,filter:'drop-shadow(0 0 10px rgba(255,200,0,.8))'},
+  brandName:{fontSize:18,fontWeight:700,letterSpacing:'-.5px'},
+  brandVer:{fontSize:10,color:'rgba(255,255,255,.3)',border:'1px solid rgba(255,255,255,.1)',
+    padding:'2px 7px',borderRadius:5,fontFamily:"'Inter',sans-serif"},
+  topCenter:{flex:1,display:'flex',justifyContent:'center'},
+  activePill:{display:'flex',alignItems:'center',gap:7,fontSize:12,
+    color:'#10b981',background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.25)',
+    padding:'5px 14px',borderRadius:20,fontFamily:"'Inter',sans-serif",fontWeight:500},
+  activeDot:{width:7,height:7,borderRadius:'50%',background:'#10b981',
+    boxShadow:'0 0 8px #10b981',animation:'dotPulse 2s ease-in-out infinite',display:'inline-block'},
+  topRight:{display:'flex',alignItems:'center',gap:14,flexShrink:0},
+  clockBox:{textAlign:'right'},
+  clockTime:{fontSize:18,fontWeight:700,letterSpacing:'1px',lineHeight:1.2,
+    fontVariantNumeric:'tabular-nums',animation:'tickAnim .1s ease'},
+  clockDate:{fontSize:10,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif",
+    textTransform:'capitalize'},
+  logoutBtn:{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
+    color:'rgba(255,255,255,.5)',width:34,height:34,borderRadius:8,
+    cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',
+    transition:'all .2s'},
+  hero:{position:'relative',zIndex:10,padding:'72px 32px 48px',textAlign:'center'},
+  heroInner:{maxWidth:700,margin:'0 auto',animation:'fadeUp .6s ease'},
+  heroTag:{fontSize:12,fontWeight:600,letterSpacing:'2px',textTransform:'uppercase',
+    color:'rgba(255,255,255,.3)',marginBottom:20,fontFamily:"'Inter',sans-serif"},
+  heroTitle:{fontSize:'clamp(38px,6vw,72px)',fontWeight:700,lineHeight:1.08,
+    letterSpacing:'-2.5px',marginBottom:20},
+  heroGrad:{background:'linear-gradient(135deg,#818cf8 0%,#a78bfa 35%,#38bdf8 65%,#34d399 100%)',
+    backgroundSize:'300% 300%',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
+    animation:'gradAnim 6s ease infinite'},
+  heroSub:{fontSize:18,lineHeight:1.65,color:'rgba(255,255,255,.4)',
+    fontFamily:"'Inter',sans-serif",fontWeight:400},
+  cardsWrap:{position:'relative',zIndex:10,flex:1,padding:'0 24px 40px'},
+  cards:{maxWidth:1100,margin:'0 auto',display:'grid',
+    gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:20},
+  foot:{position:'relative',zIndex:10,display:'flex',alignItems:'center',justifyContent:'center',
+    gap:10,padding:'16px',borderTop:'1px solid rgba(255,255,255,.04)'},
+  footItem:{fontSize:11,color:'rgba(255,255,255,.15)',fontFamily:"'Inter',sans-serif"},
+  footDot:{color:'rgba(255,255,255,.1)'},
 };
 
 CPEOF006
@@ -503,161 +523,124 @@ CPEOF006
 RUN cat > /app/frontend/src/components/ServiceCard.jsx << 'CPEOF007'
 import { useState, useEffect } from 'react';
 
-const ICONS = { browser:'🌐', desktop:'🖥️', phone:'📱' };
+export default function ServiceCard({ service:sv, status, loading, onStart, onReconnect, onStop }){
+  const [hov, setHov]     = useState(false);
+  const [elapsed, setEl]  = useState(0);
+  const running = status?.running;
 
-export default function ServiceCard({ service, status, loading, onStart, onReconnect, onStop }) {
-  const [hovered, setHovered] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const isRunning = status?.running;
+  useEffect(()=>{
+    if(!running||!status?.startTime) return;
+    const tick=()=>setEl(Math.floor((Date.now()-new Date(status.startTime))/1000));
+    tick(); const id=setInterval(tick,1000); return()=>clearInterval(id);
+  },[running,status?.startTime]);
 
-  useEffect(() => {
-    if (!isRunning || !status?.startTime) return;
-    const tick = () => setElapsed(Math.floor((Date.now() - new Date(status.startTime)) / 1000));
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [isRunning, status?.startTime]);
-
-  const fmt = s => {
-    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
-    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
-    return `${m}:${String(sec).padStart(2,'0')}`;
+  const fmt=s=>{
+    const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+    return h>0?`${h}:${p(m)}:${p(sec)}`:`${p(m)}:${p(sec)}`;
   };
+  const p=n=>String(n).padStart(2,'0');
 
   return (
-    <div
-      style={{
-        ...s.card,
-        borderColor: isRunning
-          ? `${service.accent}50`
-          : hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.07)',
-        transform: hovered && !loading ? 'translateY(-6px)' : 'none',
-        background: isRunning
-          ? `${service.accent}0d`
-          : hovered ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)',
-        boxShadow: isRunning
-          ? `0 0 0 1px ${service.accent}30 inset, 0 20px 60px ${service.accent}15`
-          : hovered ? '0 20px 60px rgba(0,0,0,0.3)' : '0 4px 24px rgba(0,0,0,0.2)',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {/* Top accent */}
-      <div style={{
-        ...s.topBar,
-        background: service.gradient,
-        opacity: isRunning ? 1 : hovered ? 0.8 : 0.4,
-      }} />
+    <div style={{
+      ...card,
+      borderColor: running?`${sv.accent}50`:hov?'rgba(255,255,255,.14)':'rgba(255,255,255,.07)',
+      background:  running?`${sv.accent}0c`:hov?'rgba(255,255,255,.06)':'rgba(255,255,255,.03)',
+      transform:   hov&&!loading?'translateY(-6px)':'none',
+      boxShadow:   running
+        ?`0 0 0 1px ${sv.accent}25 inset, 0 24px 64px ${sv.accent}18`
+        :hov?'0 24px 48px rgba(0,0,0,.35)':'0 4px 20px rgba(0,0,0,.2)',
+    }}
+    onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}>
 
-      {/* Glow */}
-      <div style={{
-        ...s.glow,
-        background: service.glow,
-        opacity: isRunning ? 0.25 : hovered ? 0.15 : 0.06,
-      }} />
+      {/* Top accent line */}
+      <div style={{...topLine, background:sv.g, opacity:running?1:hov?.7:.35}}/>
 
-      {/* Status badge */}
-      <div style={{ ...s.badge, ...(isRunning ? s.badgeOn : s.badgeOff) }}>
-        {isRunning
-          ? <><span style={{ ...s.bdot, background:'#10b981', boxShadow:'0 0 6px #10b981' }} />Запущено</>
-          : <><span style={{ ...s.bdot, background:'rgba(255,255,255,0.3)' }} />Очікує</>
-        }
+      {/* Glow blob */}
+      <div style={{position:'absolute',inset:-80,borderRadius:'50%',
+        background:sv.glow,filter:'blur(100px)',opacity:running?.3:hov?.15:.05,
+        pointerEvents:'none',transition:'opacity .3s'}}/>
+
+      {/* Status */}
+      <div style={{...badge, background:running?`${sv.accent}18`:'rgba(255,255,255,.05)',
+        borderColor:running?`${sv.accent}40`:'rgba(255,255,255,.09)',
+        color:running?sv.accent:'rgba(255,255,255,.35)'}}>
+        <span style={{width:6,height:6,borderRadius:'50%',background:running?sv.accent:'rgba(255,255,255,.25)',
+          display:'inline-block',boxShadow:running?`0 0 8px ${sv.accent}`:'none',
+          animation:running?'blink 2s ease infinite':'none'}}/>
+        {running?'Активна':'Очікує'}
       </div>
 
       {/* Icon */}
-      <div style={s.icon}>{service.icon}</div>
+      <div style={iconWrap}>{sv.icon}</div>
 
-      {/* Name */}
-      <h3 style={s.name}>{service.label}</h3>
-      <p style={s.desc}>{service.desc}</p>
+      {/* Text */}
+      <h3 style={title}>{sv.label}</h3>
+      <p style={desc}>{sv.desc}</p>
 
-      {/* Timer (якщо running) */}
-      {isRunning && (
-        <div style={s.timer}>
-          <span style={s.timerIcon}>⏱</span>
-          <span style={s.timerVal}>{fmt(elapsed)}</span>
+      {/* Timer */}
+      {running && (
+        <div style={timer}>
+          <span>⏱</span>
+          <span style={{fontVariantNumeric:'tabular-nums',letterSpacing:'.5px'}}>{fmt(elapsed)}</span>
         </div>
       )}
 
       {/* Buttons */}
-      <div style={s.btnRow}>
-        {isRunning ? (
+      <div style={btnRow}>
+        {running ? (
           <>
-            <button style={{ ...s.btn, ...s.btnPrimary, background: service.gradient }}
-              onClick={onReconnect}>
-              ▶ Підключитись
-            </button>
-            <button style={{ ...s.btn, ...s.btnStop }} onClick={onStop} title="Зупинити">
-              ⏹
-            </button>
+            <button style={{...btn,background:sv.g,border:'none',
+              boxShadow:`0 4px 20px ${sv.accent}40`,flex:1}}
+              onClick={onReconnect}>▶ Підключитись</button>
+            <button style={{...btn,background:'rgba(239,68,68,.12)',
+              borderColor:'rgba(239,68,68,.3)',color:'#f87171',width:42}}
+              onClick={onStop} title="Зупинити">⏹</button>
           </>
-        ) : (
-          <button
-            style={{
-              ...s.btn, ...s.btnLaunch,
-              background: hovered ? `${service.accent}25` : 'rgba(255,255,255,0.06)',
-              borderColor: hovered ? `${service.accent}60` : 'rgba(255,255,255,0.1)',
-              cursor: loading ? 'wait' : 'pointer',
-            }}
-            onClick={onStart}
-            disabled={loading}
-          >
+        ):(
+          <button style={{...btn, flex:1,
+            background:hov?`${sv.accent}20`:'rgba(255,255,255,.06)',
+            borderColor:hov?`${sv.accent}50`:'rgba(255,255,255,.1)',
+            cursor:loading?'wait':'pointer', opacity:loading?.7:1}}
+            onClick={onStart} disabled={loading}>
             {loading
-              ? <><span style={s.spinner} /> Запускаємо...</>
-              : <>🚀 Запустити</>
-            }
+              ?<><span style={spin}/>Запускаємо...</>
+              <>🚀 Запустити</>}
           </button>
         )}
       </div>
 
-      {/* Bottom border rim */}
-      <div style={{ ...s.rimBottom, background: service.gradient, opacity: isRunning ? 0.5 : hovered ? 0.3 : 0.12 }} />
-
-      <style>{`@keyframes sp{to{transform:rotate(360deg)}}`}</style>
+      <style>{`
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+        @keyframes sp{to{transform:rotate(360deg)}}
+      `}</style>
     </div>
   );
 }
 
-const s = {
-  card: {
-    position:'relative', borderRadius:20, padding:'24px 24px 20px',
-    border:'1px solid', cursor:'default', overflow:'hidden',
-    display:'flex', flexDirection:'column', gap:10,
-    transition:'all .28s cubic-bezier(.4,0,.2,1)',
-    backdropFilter:'blur(16px)',
-    fontFamily:"'Space Grotesk',sans-serif",
-  },
-  topBar: { position:'absolute', top:0, left:0, right:0, height:2, zIndex:1 },
-  glow: { position:'absolute', inset:-60, filter:'blur(80px)', pointerEvents:'none', transition:'opacity .3s' },
-  badge: { position:'relative', zIndex:1, alignSelf:'flex-start', display:'flex',
-    alignItems:'center', gap:6, fontSize:11, fontWeight:600, letterSpacing:'.8px',
-    textTransform:'uppercase', padding:'4px 10px', borderRadius:6, border:'1px solid',
-    fontFamily:"'Inter',sans-serif" },
-  badgeOn:  { background:'rgba(16,185,129,.12)', borderColor:'rgba(16,185,129,.3)', color:'#10b981' },
-  badgeOff: { background:'rgba(255,255,255,.05)', borderColor:'rgba(255,255,255,.1)', color:'rgba(255,255,255,.4)' },
-  bdot: { display:'inline-block', width:6, height:6, borderRadius:'50%' },
-  icon: { position:'relative', zIndex:1, fontSize:44, lineHeight:1, marginTop:4 },
-  name: { position:'relative', zIndex:1, fontSize:21, fontWeight:700, letterSpacing:'-.5px', color:'#fff', margin:0 },
-  desc: { position:'relative', zIndex:1, fontSize:13, color:'rgba(255,255,255,.45)',
-    lineHeight:1.6, margin:0, fontFamily:"'Inter',sans-serif", flexGrow:1 },
-  timer: { position:'relative', zIndex:1, display:'flex', alignItems:'center', gap:6,
-    fontSize:13, color:'rgba(255,255,255,.5)', fontFamily:"'Inter',sans-serif" },
-  timerIcon: { fontSize:12 },
-  timerVal: { fontVariantNumeric:'tabular-nums', letterSpacing:'.5px', fontWeight:500 },
-  btnRow: { position:'relative', zIndex:1, display:'flex', gap:8, marginTop:4 },
-  btn: { display:'flex', alignItems:'center', justifyContent:'center', gap:8,
-    padding:'11px 16px', borderRadius:10, fontSize:13, fontWeight:600,
-    fontFamily:"'Space Grotesk',sans-serif", border:'1px solid', transition:'all .2s', cursor:'pointer' },
-  btnPrimary: { flex:1, color:'#fff', borderColor:'transparent',
-    boxShadow:'0 4px 16px rgba(0,0,0,.3)' },
-  btnStop: { width:44, color:'#f87171', background:'rgba(239,68,68,.1)',
-    borderColor:'rgba(239,68,68,.3)', flexShrink:0 },
-  btnLaunch: { flex:1, color:'#fff', transition:'all .25s' },
-  spinner: { display:'inline-block', width:13, height:13,
-    border:'2px solid rgba(255,255,255,.2)', borderTopColor:'#fff',
-    borderRadius:'50%', animation:'sp .7s linear infinite' },
-  rimBottom: { position:'absolute', bottom:0, left:0, right:0, height:1, transition:'opacity .3s' },
-};
+const card={position:'relative',borderRadius:20,padding:'24px 22px 20px',
+  border:'1px solid',overflow:'hidden',display:'flex',flexDirection:'column',gap:10,
+  transition:'all .28s cubic-bezier(.4,0,.2,1)',backdropFilter:'blur(16px)',
+  fontFamily:"'Space Grotesk',sans-serif"};
+const topLine={position:'absolute',top:0,left:0,right:0,height:2,transition:'opacity .3s'};
+const badge={position:'relative',zIndex:1,alignSelf:'flex-start',display:'flex',
+  alignItems:'center',gap:6,fontSize:11,fontWeight:600,letterSpacing:'.8px',
+  textTransform:'uppercase',border:'1px solid',padding:'3px 10px',borderRadius:6,
+  fontFamily:"'Inter',sans-serif"};
+const iconWrap={position:'relative',zIndex:1,fontSize:44,lineHeight:1,marginTop:4};
+const title={position:'relative',zIndex:1,fontSize:21,fontWeight:700,
+  letterSpacing:'-.5px',color:'#fff',margin:0};
+const desc={position:'relative',zIndex:1,fontSize:13,color:'rgba(255,255,255,.45)',
+  lineHeight:1.6,margin:0,fontFamily:"'Inter',sans-serif",flexGrow:1};
+const timer={position:'relative',zIndex:1,display:'flex',alignItems:'center',gap:6,
+  fontSize:13,color:'rgba(255,255,255,.5)',fontFamily:"'Inter',sans-serif"};
+const btnRow={position:'relative',zIndex:1,display:'flex',gap:8,marginTop:4};
+const btn={display:'flex',alignItems:'center',justifyContent:'center',gap:7,
+  padding:'12px 16px',borderRadius:10,fontSize:13,fontWeight:600,
+  fontFamily:"'Space Grotesk',sans-serif",border:'1px solid',
+  color:'#fff',transition:'all .2s',cursor:'pointer'};
+const spin={display:'inline-block',width:13,height:13,
+  border:'2px solid rgba(255,255,255,.2)',borderTopColor:'#fff',
+  borderRadius:'50%',animation:'sp .7s linear infinite'};
 
 CPEOF007
 
@@ -988,7 +971,7 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
 CPEOF011
 
 RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 
@@ -997,8 +980,7 @@ const CONFIGS = {
   desktop: { display:':2', vncPort:5902, wsPort:6902, res:'1920x1080x24' },
   phone:   { display:':3', vncPort:5903, wsPort:6903, res:'412x915x24'   },
 };
-const sessions = { browser:null, desktop:null, phone:null };
-
+const sessions = {};
 const FF = '/opt/firefox/firefox';
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function sp(cmd,args,env={}){
@@ -1011,74 +993,64 @@ async function startSession(type){
   if(sessions[type]) await stopSession(type);
   const cfg=CONFIGS[type];
   const procs={};
-  console.log(`▶ [${type}]...`);
 
-  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,
-    '-ac','-nolisten','tcp','-noreset','-dpi','96']);
+  // Xvfb
+  procs.xvfb=sp('Xvfb',[cfg.display,'-screen','0',cfg.res,'-ac','-nolisten','tcp','-noreset','-dpi','96']);
   await sleep(1500);
 
+  // Фон (без WM)
+  sp('xsetroot',['-solid','#0d1117'],{DISPLAY:cfg.display});
+  await sleep(200);
+
   if(type==='browser'){
-    // Firefox — працює без snap, рендерить нормально
-    procs.wm=sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
-    await sleep(600);
-    procs.app=sp(FF,[
-      '--no-remote','--new-instance',
-      '-url','https://www.google.com',
-    ],{
-      DISPLAY:cfg.display, HOME:'/root',
-      MOZ_DISABLE_CONTENT_SANDBOX:'1',
-      MOZ_ENABLE_WAYLAND:'0',
-    });
+    // Openbox + Firefox повноекранний
+    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
+      {DISPLAY:cfg.display,HOME:'/root',GTK_THEME:'Arc-Dark'});
+    await sleep(800);
+    procs.browser=sp(FF,['--no-remote','--new-instance','--maximized',
+      '-url','https://www.google.com'],
+      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
+       GTK_THEME:'Arc-Dark',MOZ_ENABLE_WAYLAND:'0'});
 
   } else if(type==='desktop'){
-    // MATE Desktop + Firefox
+    // Openbox + tint2 taskbar + Firefox
     fs.mkdirSync('/tmp/xdg',{recursive:true});
-    fs.mkdirSync('/root/.config',{recursive:true});
-    try{ require('child_process').execSync(
-      'convert -size 1920x1080 gradient:"#0d1117-#1c2333" /tmp/wp.png',
-      {timeout:5000}); }catch{}
 
-    procs.dbus=sp('bash',['-c',
-      'mkdir -p /run/dbus && dbus-daemon --system --fork 2>/dev/null; true'],{});
-    await sleep(700);
+    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
+      {DISPLAY:cfg.display,HOME:'/root',GTK_THEME:'Arc-Dark',
+       XDG_RUNTIME_DIR:'/tmp/xdg'});
+    await sleep(800);
 
-    procs.wm=sp('bash',['-c',`
-      export DISPLAY=${cfg.display}
-      export HOME=/root
-      export XDG_RUNTIME_DIR=/tmp/xdg
-      export DBUS_SESSION_BUS_ADDRESS=autolaunch:
-      (sleep 5
-       gsettings set org.mate.interface gtk-theme 'Arc-Dark' 2>/dev/null
-       gsettings set org.mate.interface icon-theme 'Papirus-Dark' 2>/dev/null
-       gsettings set org.mate.Marco.general theme 'Arc-Dark' 2>/dev/null
-       gsettings set org.mate.screensaver lock-enabled false 2>/dev/null
-       [ -f /tmp/wp.png ] && gsettings set org.mate.background picture-filename '/tmp/wp.png' 2>/dev/null
-       gsettings set org.mate.background picture-options 'stretched' 2>/dev/null
-      )&
-      dbus-run-session -- mate-session 2>/tmp/mate.log
-    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg',
-       MOZ_ENABLE_WAYLAND:'0'});
+    procs.taskbar=sp('tint2',['-c','/app/tint2rc'],
+      {DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(400);
+
+    // Wallpaper
+    try{
+      execSync('convert -size 1920x1080 gradient:"#0d1117-#1a2744" /tmp/wp.png',{timeout:5000});
+      sp('feh',['--bg-scale','/tmp/wp.png'],{DISPLAY:cfg.display});
+    }catch{}
+
+    // Firefox автозапуск
+    procs.browser=sp(FF,['--no-remote','--new-instance','https://www.google.com'],
+      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
+       GTK_THEME:'Arc-Dark',MOZ_ENABLE_WAYLAND:'0',XDG_RUNTIME_DIR:'/tmp/xdg'});
 
   } else if(type==='phone'){
-    // Власний Android UI в Firefox (кіоск)
-    procs.wm=sp('openbox',[],{DISPLAY:cfg.display,HOME:'/root'});
+    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
+      {DISPLAY:cfg.display,HOME:'/root'});
     await sleep(700);
-    procs.app=sp(FF,[
-      '--no-remote','--new-instance','--kiosk',
-      'file:///app/backend/android.html',
-    ],{
-      DISPLAY:cfg.display, HOME:'/root',
-      MOZ_DISABLE_CONTENT_SANDBOX:'1',
-      MOZ_ENABLE_WAYLAND:'0',
-    });
+    procs.browser=sp(FF,['--no-remote','--new-instance','--kiosk',
+      'file:///app/backend/android.html'],
+      {DISPLAY:cfg.display,HOME:'/root',MOZ_DISABLE_CONTENT_SANDBOX:'1',
+       MOZ_ENABLE_WAYLAND:'0'});
   }
 
-  await sleep(type==='desktop'?5000:4000);
+  await sleep(type==='desktop'?6000:5000);
 
-  procs.vnc=sp('x11vnc',[
-    '-display',cfg.display,'-forever','-nopw','-quiet','-shared',
-    '-rfbport',String(cfg.vncPort),'-wait','20','-defer','10',
-  ]);
+  procs.vnc=sp('x11vnc',['-display',cfg.display,'-forever','-nopw',
+    '-quiet','-shared','-rfbport',String(cfg.vncPort),
+    '-wait','20','-defer','10','-no6']);
   await sleep(1200);
 
   procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
@@ -1093,11 +1065,11 @@ async function stopSession(type){
   const s=sessions[type]; if(!s)return;
   for(const p of Object.values(s.procs).reverse())
     try{if(p&&!p.killed)p.kill('SIGTERM');}catch{}
-  sessions[type]=null;
+  delete sessions[type];
 }
 
 function getAllStatus(){
-  const o={};
+  const o={browser:{running:false},desktop:{running:false},phone:{running:false}};
   for(const[t,s]of Object.entries(sessions))
     o[t]=s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
   return o;
@@ -1508,6 +1480,164 @@ stdout_logfile=/var/log/supervisor/backend.log
 stderr_logfile=/var/log/supervisor/backend.err.log
 
 CPEOF016
+
+RUN cat > /app/ob-rc.xml << 'CPEOF017'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <theme><name>Arc-Dark</name>
+    <font place="ActiveWindow"><name>Sans</name><size>10</size><weight>Bold</weight></font>
+  </theme>
+  <desktops><number>1</number><names><name>CloudPlay</name></names></desktops>
+  <focus><followMouse>no</followMouse><focusLast>yes</focusLast></focus>
+  <placement><policy>Smart</policy></placement>
+  <keyboard>
+    <keybind key="A-F4"><action name="Close"/></keybind>
+    <keybind key="super-d"><action name="ToggleShowDesktop"/></keybind>
+  </keyboard>
+  <mouse>
+    <context name="Desktop">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu"><menu>root-menu</menu></action>
+      </mousebind>
+    </context>
+    <context name="Client">
+      <mousebind button="A-Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="A-Right" action="Drag"><action name="Resize"/></mousebind>
+    </context>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
+    </context>
+  </mouse>
+</openbox_config>
+
+CPEOF017
+
+RUN cat > /app/ob-menu.xml << 'CPEOF018'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu>
+  <menu id="root-menu" label="CloudPlay PC">
+    <item label="🌐  Firefox Browser">
+      <action name="Execute"><execute>/opt/firefox/firefox --new-window https://www.google.com</execute></action>
+    </item>
+    <item label="📁  Files (Thunar)">
+      <action name="Execute"><execute>thunar /root</execute></action>
+    </item>
+    <item label="🖥️  Terminal">
+      <action name="Execute"><execute>xterm -bg '#0d1117' -fg '#e6edf3' -fa 'Monospace' -fs 13 -title Terminal</execute></action>
+    </item>
+    <separator/>
+    <item label="📝  Text Editor">
+      <action name="Execute"><execute>mousepad</execute></action>
+    </item>
+    <item label="🖥️  System Monitor">
+      <action name="Execute"><execute>xterm -e 'htop'</execute></action>
+    </item>
+    <separator/>
+    <item label="🔄  Restart Desktop">
+      <action name="Restart"/>
+    </item>
+  </menu>
+</openbox_menu>
+
+CPEOF018
+
+RUN cat > /app/tint2rc << 'CPEOF019'
+# CloudPlay tint2 config
+rounded = 0
+border_width = 0
+background_color = #0d1117 100
+border_color = #30363d 100
+
+panel_monitor = all
+panel_position = bottom center horizontal
+panel_size = 100% 44
+panel_margin = 0 0
+panel_padding = 4 0 4
+panel_dock = 0
+wm_menu = 0
+panel_layer = top
+panel_background_id = 1
+panel_items = LTSC
+
+# Taskbar
+taskbar_mode = single_desktop
+taskbar_padding = 2 2 2
+taskbar_background_id = 0
+taskbar_active_background_id = 2
+
+task_icon = 1
+task_text = 1
+task_maximum_size = 220 36
+task_centered = 1
+task_padding = 4 4 4
+task_font = Sans 10
+task_font_color = #c9d1d9 100
+task_active_font_color = #ffffff 100
+task_background_id = 3
+task_active_background_id = 4
+
+# Launcher
+launcher_padding = 6 4 6
+launcher_background_id = 0
+launcher_icon_theme =
+launcher_item_app = /app/firefox.desktop
+
+# Systray
+systray_padding = 4 4 4
+systray_sort = ascending
+systray_icon_size = 22
+systray_icon_asb = 100 0 0
+systray_background_id = 0
+
+# Clock
+time1_format = %H:%M
+time1_font = Sans Bold 13
+time1_font_color = #ffffff 100
+time2_format = %a %d %b
+time2_font = Sans 9
+time2_font_color = #8b949e 100
+clock_font_color = #ffffff 100
+clock_padding = 8 4
+clock_background_id = 0
+
+# Background 1 - panel
+rounded = 0
+border_width = 0
+background_color = #0d1117 100
+border_color = #21262d 100
+
+# Background 2 - active taskbar item
+rounded = 4
+border_width = 0
+background_color = #21262d 100
+border_color = #30363d 100
+
+# Background 3 - task
+rounded = 4
+border_width = 0
+background_color = #0d1117 0
+border_color = #30363d 0
+
+# Background 4 - active task
+rounded = 4
+border_width = 0
+background_color = #1f6feb 80
+border_color = #1f6feb 100
+
+CPEOF019
+
+RUN cat > /app/firefox.desktop << 'CPEOF020'
+[Desktop Entry]
+Name=Firefox
+Exec=/opt/firefox/firefox --new-window https://www.google.com
+Icon=firefox
+Type=Application
+
+CPEOF020
+
+RUN ln -sf /app/ob-rc.xml /root/.config/openbox/rc.xml     && ln -sf /app/ob-menu.xml /root/.config/openbox/menu.xml
 
 RUN cd /app/backend && npm install --production
 RUN cd /app/frontend && npm install && npm run build
