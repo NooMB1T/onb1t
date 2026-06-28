@@ -22,13 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Google Chrome
 RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -f -y \
     && rm -f google-chrome-stable_current_amd64.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Wine
 RUN dpkg --add-architecture i386 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -q https://dl.winehq.org/wine-builds/winehq.key \
@@ -39,29 +37,22 @@ RUN dpkg --add-architecture i386 \
     && apt-get install -y --install-recommends winehq-stable winetricks \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Lutris
 RUN add-apt-repository ppa:lutris-team/lutris -y \
-    && apt-get update \
-    && apt-get install -y lutris \
+    && apt-get update && apt-get install -y lutris \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Steam
-RUN apt-get update \
-    && apt-get install -y steam-installer \
+RUN apt-get update && apt-get install -y steam-installer \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Flatpak
 RUN apt-get update \
     && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
     && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
@@ -986,6 +977,7 @@ RUN cat > /app/backend/package.json << 'CPEOF011'
   "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
+    "http-proxy": "^1.18.1",
     "uuid": "^9.0.0"
   }
 }
@@ -1190,24 +1182,30 @@ module.exports={startSession,stopSession,getAllStatus};
 CPEOF012
 
 RUN cat > /app/backend/server.js << 'CPEOF013'
-const express  = require('express');
-const http     = require('http');
-const path     = require('path');
-const crypto   = require('crypto');
-const fs       = require('fs');
+const express   = require('express');
+const http      = require('http');
+const httpProxy = require('http-proxy');
+const path      = require('path');
+const crypto    = require('crypto');
+const fs        = require('fs');
 
 const app    = express();
 const server = http.createServer(app);
+const proxy  = httpProxy.createProxyServer({ ws:true, changeOrigin:true });
+proxy.on('error', (e, req, res) => {
+  console.error('[proxy]', e.message);
+  if (res?.writeHead) { res.writeHead(502); res.end('VNC not ready'); }
+});
+
 app.use(express.json());
 
-// ── Статика ───────────────────────────────────────────────────────
-const DIST   = path.join(__dirname, '../frontend/dist');
-const NOVNC  = '/opt/novnc';
-
+// Статика
+const DIST  = path.join(__dirname, '../frontend/dist');
+const NOVNC = '/opt/novnc';
 app.use(express.static(DIST));
 app.use('/novnc', express.static(NOVNC));
 
-// ── Auth ──────────────────────────────────────────────────────────
+// Auth
 const TOKENS   = new Set();
 const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
 
@@ -1227,7 +1225,7 @@ function auth(req, res, next) {
   next();
 }
 
-// ── Session Manager (lazy) ────────────────────────────────────────
+// Session manager
 let sm = null;
 function getSM() {
   if (!sm) try { sm = require('./sessionManager'); } catch(e) { console.error('[SM]', e.message); }
@@ -1264,13 +1262,16 @@ app.get('/api/stats', auth, (req, res) => {
     const total = parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
     const avail = parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
     res.json({ memory:{total:Math.round(total),used:Math.round(total-avail)},
-      uptime:Math.floor(process.uptime()), sessions: getSM()?.getAllStatus()||{} });
+      uptime:Math.floor(process.uptime()), sessions:getSM()?.getAllStatus()||{} });
   } catch { res.json({memory:{total:0,used:0},uptime:0,sessions:{}}); }
 });
 
 app.get('/api/health', (req, res) => res.json({ status:'ok', version:'1.4' }));
 
-// ── WebSocket proxy для noVNC ─────────────────────────────────────
+// SPA fallback
+app.get('*', (req, res) => res.sendFile(path.join(DIST, 'index.html')));
+
+// WebSocket proxy → websockify
 const WS_PORTS = { browser:6901, desktop:6902, phone:6903 };
 
 server.on('upgrade', (req, socket, head) => {
@@ -1278,36 +1279,14 @@ server.on('upgrade', (req, socket, head) => {
   if (!m) { socket.destroy(); return; }
   const port = WS_PORTS[m[1]];
   if (!port) { socket.destroy(); return; }
-
-  const net = require('net');
-  const conn = net.connect(port, '127.0.0.1', () => {
-    // Websockify handshake
-    socket.write(
-      'HTTP/1.1 101 Switching Protocols\r\n' +
-      'Upgrade: websocket\r\n' +
-      'Connection: Upgrade\r\n' +
-      `Sec-WebSocket-Accept: ${require('crypto')
-        .createHash('sha1')
-        .update((req.headers['sec-websocket-key']||'') + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
-        .digest('base64')}\r\n\r\n`
-    );
-    conn.pipe(socket);
-    socket.pipe(conn);
-  });
-  conn.on('error', () => socket.destroy());
-  socket.on('error', () => conn.destroy());
+  console.log(`[WS] proxying ${m[1]} → :${port}`);
+  proxy.ws(req, socket, head, { target:`ws://127.0.0.1:${port}` });
 });
 
-// ── SPA fallback ──────────────────────────────────────────────────
-app.get('*', (req, res) => {
-  res.sendFile(path.join(DIST, 'index.html'));
-});
-
-// ── Start ─────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '8080');
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ CloudPlay v1.4 на порту ${PORT}`);
-  getSM(); // preload
+  console.log(`✅ CloudPlay v1.4 :${PORT}`);
+  getSM();
 });
 
 CPEOF013
