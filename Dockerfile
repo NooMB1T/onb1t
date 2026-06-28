@@ -2,20 +2,14 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.3"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Базові пакети + XFCE + залежності Chrome + все що треба юзеру
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tigervnc-standalone-server \
     x11-xserver-utils xauth dbus-x11 \
-    xfce4 xfce4-terminal xfce4-goodies xfce4-power-manager \
+    xfce4 xfce4-terminal xfce4-goodies \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
-    thunar mousepad \
-    vlc qbittorrent \
-    gimp \
-    libreoffice \
-    audacity \
-    flameshot \
-    keepassxc \
-    btop neofetch \
+    thunar mousepad vlc qbittorrent \
+    gimp libreoffice audacity \
+    flameshot keepassxc btop \
     telegram-desktop \
     openbox tint2 feh \
     imagemagick ca-certificates netcat-openbsd \
@@ -33,7 +27,7 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
     && rm -f google-chrome-stable_current_amd64.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Wine — запуск Windows програм і ігор
+# Wine
 RUN dpkg --add-architecture i386 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -q https://dl.winehq.org/wine-builds/winehq.key \
@@ -44,7 +38,7 @@ RUN dpkg --add-architecture i386 \
     && apt-get install -y --install-recommends winehq-stable winetricks \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Lutris — ігровий менеджер (Steam, Wine, Proton)
+# Lutris
 RUN add-apt-repository ppa:lutris-team/lutris -y \
     && apt-get update \
     && apt-get install -y lutris \
@@ -55,7 +49,7 @@ RUN apt-get update \
     && apt-get install -y steam-installer \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Flatpak + магазин програм
+# Flatpak + магазин
 RUN apt-get update \
     && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
     && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
@@ -1115,92 +1109,89 @@ CPEOF012
 
 RUN cat > /app/backend/server.js << 'CPEOF013'
 const express = require('express');
-const { execSync } = require('child_process');
-const sessionManager = require('./sessionManager');
-
-const app = express();
+const crypto  = require('crypto');
+const fs      = require('fs');
+const app     = express();
 app.use(express.json());
 
+const TOKENS  = new Set();
+const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
+
+// ── Auth (не залежить ні від чого) ──────────────────────────────
+app.post('/api/auth/login', (req, res) => {
+  if (!req.body || req.body.password !== PASSWORD)
+    return res.status(401).json({ success:false, error:'Невірний пароль' });
+  const token = crypto.randomUUID();
+  TOKENS.add(token);
+  setTimeout(() => TOKENS.delete(token), 86400000);
+  res.json({ success:true, token });
+});
+
+function auth(req, res, next) {
+  const h = req.headers.authorization;
+  if (!h?.startsWith('Bearer ') || !TOKENS.has(h.split(' ')[1]))
+    return res.status(401).json({ error:'Unauthorized' });
+  next();
+}
+
+// ── Session Manager (lazy load — не крашить сервер якщо помилка) ─
+let sm = null;
+function getSM() {
+  if (!sm) {
+    try { sm = require('./sessionManager'); }
+    catch(e) { console.error('[SM] load error:', e.message); }
+  }
+  return sm;
+}
+
 // ── Sessions ─────────────────────────────────────────────────────
-
-app.post('/api/sessions/start/:type', async (req, res) => {
+app.post('/api/sessions/start/:type', auth, async (req, res) => {
+  const mgr = getSM();
+  if (!mgr) return res.status(503).json({ success:false, error:'Session manager unavailable' });
   const { type } = req.params;
-  if (!['browser', 'desktop', 'phone'].includes(type)) {
-    return res.status(400).json({ success: false, error: 'Невідомий тип' });
-  }
+  if (!['browser','desktop','phone'].includes(type))
+    return res.status(400).json({ success:false, error:'Bad type' });
   try {
-    await sessionManager.startSession(type);
-    res.json({
-      success: true,
-      vncUrl: `/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true`,
-    });
-  } catch (err) {
-    console.error(`Start [${type}] failed:`, err.message);
-    res.status(500).json({ success: false, error: err.message });
+    await mgr.startSession(type);
+    res.json({ success:true,
+      vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true` });
+  } catch(e) {
+    res.status(500).json({ success:false, error:e.message });
   }
 });
 
-app.post('/api/sessions/stop/:type', async (req, res) => {
-  await sessionManager.stopSession(req.params.type);
-  res.json({ success: true });
+app.post('/api/sessions/stop/:type', auth, async (req, res) => {
+  const mgr = getSM();
+  if (mgr) await mgr.stopSession(req.params.type).catch(()=>{});
+  res.json({ success:true });
 });
 
-app.get('/api/sessions/status', (req, res) => {
-  res.json(sessionManager.getAllStatus());
+app.get('/api/sessions/status', auth, (req, res) => {
+  const mgr = getSM();
+  res.json(mgr ? mgr.getAllStatus() : {browser:{running:false},desktop:{running:false},phone:{running:false}});
 });
 
-// ── ADB Controls (для телефону) ───────────────────────────────────
-
-// Допустимі keycodes: Back=4, Home=3, Recents=187, Vol+=24, Vol-=25, Power=26
-const ALLOWED_KEYS = new Set([3, 4, 24, 25, 26, 187]);
-
-app.post('/api/adb/keyevent', (req, res) => {
-  const code = Number(req.body.keycode);
-  if (!ALLOWED_KEYS.has(code)) {
-    return res.status(400).json({ error: 'Invalid keycode' });
-  }
+// ── Stats ─────────────────────────────────────────────────────────
+app.get('/api/stats', auth, (req, res) => {
   try {
-    execSync(`${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb shell input keyevent ${code}`, { timeout: 3000 });
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: 'ADB недоступний або емулятор ще завантажується' });
-  }
+    const mem  = fs.readFileSync('/proc/meminfo','utf8');
+    const total = parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
+    const avail = parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
+    const mgr  = getSM();
+    res.json({ memory:{ total:Math.round(total), used:Math.round(total-avail) },
+      uptime:Math.floor(process.uptime()),
+      sessions: mgr ? mgr.getAllStatus() : {} });
+  } catch { res.json({ memory:{total:0,used:0}, uptime:0, sessions:{} }); }
 });
 
-app.post('/api/adb/rotate', (req, res) => {
-  const orientation = Number(req.body.orientation); // 0=portrait, 1=landscape
-  if (orientation !== 0 && orientation !== 1) {
-    return res.status(400).json({ error: 'Invalid orientation' });
-  }
-  const adb = `${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb`;
-  try {
-    execSync(`${adb} shell settings put system accelerometer_rotation 0`, { timeout: 3000 });
-    execSync(`${adb} shell settings put system user_rotation ${orientation}`, { timeout: 3000 });
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: 'ADB rotate failed' });
-  }
-});
+app.get('/api/health', (req, res) => res.json({ status:'ok', version:'1.3' }));
 
-app.post('/api/adb/swipe', (req, res) => {
-  const { x1, y1, x2, y2, duration = 300 } = req.body;
-  const adb = `${process.env.ANDROID_SDK_ROOT || '/opt/android-sdk'}/platform-tools/adb`;
-  try {
-    execSync(`${adb} shell input swipe ${x1} ${y1} ${x2} ${y2} ${duration}`, { timeout: 3000 });
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: 'Swipe failed' });
-  }
-});
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
-});
-
-// ── Start ────────────────────────────────────────────────────────
-const PORT = process.env.API_PORT || 3001;
+// ── Start ─────────────────────────────────────────────────────────
+const PORT = parseInt(process.env.API_PORT||'3001');
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`🚀 API на 127.0.0.1:${PORT}`);
+  console.log(`✅ CloudPlay API v1.3 on :${PORT}`);
+  // Preload session manager
+  getSM();
 });
 
 CPEOF013
