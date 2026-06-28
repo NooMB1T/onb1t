@@ -1,17 +1,19 @@
 FROM ubuntu:22.04
-LABEL maintainer="CloudPlay v1.3"
+LABEL maintainer="CloudPlay v1.4"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
+# Базові пакети + Cinnamon
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tigervnc-standalone-server \
     x11-xserver-utils xauth dbus-x11 \
-    xfce4 xfce4-terminal xfce4-goodies \
+    cinnamon cinnamon-core nemo \
+    xfce4 xfce4-terminal \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
-    thunar mousepad vlc qbittorrent \
+    mousepad vlc qbittorrent \
     gimp libreoffice audacity \
     flameshot keepassxc btop \
     telegram-desktop \
-    openbox tint2 feh \
+    openbox tint2 feh xterm \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     libnspr4 libnss3 xdg-utils libglib2.0-0 libgbm1 \
@@ -1147,9 +1149,16 @@ async function startSession(type){
       export DISPLAY=${cfg.display}
       export HOME=/root
       export XDG_RUNTIME_DIR=/tmp/xdg
+      export XDG_SESSION_TYPE=x11
+      export XDG_SESSION_DESKTOP=cinnamon
+      export XDG_CURRENT_DESKTOP=X-Cinnamon
+      export XKL_XMODMAP_DISABLE=1
+      export LIBGL_ALWAYS_INDIRECT=1
       export DBUS_SESSION_BUS_ADDRESS=autolaunch:
-      dbus-run-session -- startxfce4 2>/tmp/xfce.log
-    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg'});
+      dbus-run-session -- cinnamon-session 2>/tmp/cinnamon.log || startxfce4 2>/tmp/xfce.log
+    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg',
+      XDG_SESSION_TYPE:'x11',XDG_SESSION_DESKTOP:'cinnamon',
+      XDG_CURRENT_DESKTOP:'X-Cinnamon',XKL_XMODMAP_DISABLE:'1'});
 
   } else {
     procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
