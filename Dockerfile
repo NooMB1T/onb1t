@@ -1029,14 +1029,97 @@ async function waitDisplay(d,tries=40){
   return false;
 }
 
+function setupXFCE(){
+  const xc = '/root/.config/xfce4/xfconf/xfce-perchannel-xml';
+  fs.mkdirSync(xc, {recursive:true});
+  fs.mkdirSync('/root/.config/autostart', {recursive:true});
+
+  // Arc-Dark GTK тема
+  fs.writeFileSync(`${xc}/xsettings.xml`, `<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="Arc-Dark"/>
+    <property name="IconThemeName" type="string" value="Papirus-Dark"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="FontName" type="string" value="Sans 11"/>
+    <property name="CursorThemeName" type="string" value="Adwaita"/>
+  </property>
+</channel>`);
+
+  // Arc-Dark вікна
+  fs.writeFileSync(`${xc}/xfwm4.xml`, `<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="theme" type="string" value="Arc-Dark"/>
+    <property name="title_font" type="string" value="Sans Bold 10"/>
+    <property name="button_layout" type="string" value="|HMC"/>
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>`);
+
+  // Темний фон
+  fs.writeFileSync(`${xc}/xfce4-desktop.xml`, `<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="image-style" type="int" value="0"/>
+          <property name="color-style" type="int" value="0"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="0.0509"/>
+            <value type="double" value="0.0667"/>
+            <value type="double" value="0.0902"/>
+            <value type="double" value="1.000"/>
+          </property>
+        </property>
+      </property>
+    </property>
+  </property>
+</channel>`);
+
+  // Chrome wrapper (додає --no-sandbox для root)
+  fs.writeFileSync('/usr/local/bin/chrome', `#!/bin/bash
+exec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"
+`);
+  fs.chmodSync('/usr/local/bin/chrome', '755');
+
+  // Chrome .desktop щоб XFCE знав про нього
+  fs.writeFileSync('/usr/share/applications/chrome-wrapper.desktop', `[Desktop Entry]
+Version=1.0
+Name=Google Chrome
+Comment=Web Browser
+Exec=/usr/local/bin/chrome %U
+Terminal=false
+Type=Application
+Icon=google-chrome
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml_xml;x-scheme-handler/http;x-scheme-handler/https;
+`);
+
+  // Автозапуск Chrome при старті XFCE
+  fs.writeFileSync('/root/.config/autostart/chrome.desktop', `[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Exec=/usr/local/bin/chrome https://www.google.com
+StartupNotify=false
+Terminal=false`);
+
+  // Встановлюємо Chrome як браузер за замовчуванням
+  try{ execSync('update-alternatives --set x-www-browser /usr/local/bin/chrome 2>/dev/null || true'); }catch{}
+  try{ execSync('xdg-mime default chrome-wrapper.desktop x-scheme-handler/http 2>/dev/null || true'); }catch{}
+  try{ execSync('xdg-mime default chrome-wrapper.desktop x-scheme-handler/https 2>/dev/null || true'); }catch{}
+}
+
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
   const cfg=CONFIGS[type];
   const procs={};
   console.log(`▶ [${type}]...`);
 
-  // TigerVNC — X + VNC в одному
   fs.mkdirSync('/root/.vnc',{recursive:true});
+
   procs.vnc=sp('Xvnc',[cfg.display,
     '-geometry',cfg.geo,'-depth','24',
     '-SecurityTypes','None','-localhost','no',
@@ -1046,43 +1129,39 @@ async function startSession(type){
   await waitPort(cfg.vncPort);
   await sleep(300);
 
-  sp('xsetroot',['-solid','#1a1a2e','-display',cfg.display]);
+  sp('xsetroot',['-solid','#0d1117','-display',cfg.display]);
 
   if(type==='browser'){
     procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
       {DISPLAY:cfg.display,HOME:'/root'});
-    await sleep(600);
-    procs.app=sp('google-chrome',[
-      '--no-sandbox','--disable-dev-shm-usage',
-      '--disable-gpu','--start-maximized',
-      'https://www.google.com'
-    ],{DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(700);
+    procs.app=sp('/usr/local/bin/chrome',
+      ['--start-maximized','https://www.google.com'],
+      {DISPLAY:cfg.display,HOME:'/root'});
 
   } else if(type==='desktop'){
     fs.mkdirSync('/tmp/xdg',{recursive:true});
-    // XFCE — стабільний, перевірений
+    setupXFCE();
+
     procs.wm=sp('bash',['-c',`
-      export DISPLAY=${cfg.display} HOME=/root XDG_RUNTIME_DIR=/tmp/xdg
+      export DISPLAY=${cfg.display}
+      export HOME=/root
+      export XDG_RUNTIME_DIR=/tmp/xdg
       export DBUS_SESSION_BUS_ADDRESS=autolaunch:
-      # Темна тема Arc-Dark
-      xfconf-query -c xsettings -p /Net/ThemeName -s Arc-Dark 2>/dev/null &
-      xfconf-query -c xsettings -p /Net/IconThemeName -s Papirus-Dark 2>/dev/null &
-      xfconf-query -c xfwm4 -p /general/theme -s Arc-Dark 2>/dev/null &
-      dbus-run-session -- startxfce4
+      dbus-run-session -- startxfce4 2>/tmp/xfce.log
     `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg'});
 
   } else {
     procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
       {DISPLAY:cfg.display,HOME:'/root'});
-    await sleep(600);
-    procs.app=sp('google-chrome',[
-      '--no-sandbox','--disable-dev-shm-usage','--disable-gpu',
-      '--app=file:///app/backend/android.html',
-      '--window-size=412,915','--window-position=0,0'
-    ],{DISPLAY:cfg.display,HOME:'/root'});
+    await sleep(700);
+    procs.app=sp('/usr/local/bin/chrome',
+      ['--app=file:///app/backend/android.html',
+       '--window-size=412,915','--window-position=0,0'],
+      {DISPLAY:cfg.display,HOME:'/root'});
   }
 
-  await sleep(type==='desktop'?5000:4000);
+  await sleep(type==='desktop'?6000:5000);
   procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
   await waitPort(cfg.wsPort);
 
