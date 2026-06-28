@@ -2,7 +2,6 @@ FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.4"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
-# Базові пакети + Cinnamon
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tigervnc-standalone-server \
     x11-xserver-utils xauth dbus-x11 \
@@ -18,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
     libnspr4 libnss3 xdg-utils libglib2.0-0 libgbm1 \
     python3 python3-pip \
-    wget curl unzip gnupg software-properties-common supervisor nginx \
+    wget curl unzip gnupg software-properties-common supervisor \
     net-tools procps fonts-liberation fontconfig libfontconfig1 \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -51,7 +50,7 @@ RUN apt-get update \
     && apt-get install -y steam-installer \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Flatpak + магазин
+# Flatpak
 RUN apt-get update \
     && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
     && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
@@ -69,9 +68,8 @@ RUN mkdir -p /opt/novnc \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
 
 RUN mkdir -p /app/frontend/src/components /app/backend \
-    && mkdir -p /var/log/supervisor /var/log/nginx /run/nginx /tmp/xdg \
-    && mkdir -p /root/.config/openbox /root/.vnc \
-    && rm -f /etc/nginx/sites-enabled/default
+    && mkdir -p /var/log/supervisor /tmp/xdg \
+    && mkdir -p /root/.config/openbox /root/.vnc
 
 RUN cat > /app/frontend/package.json << 'CPEOF000'
 {
@@ -983,15 +981,11 @@ CPEOF010
 RUN cat > /app/backend/package.json << 'CPEOF011'
 {
   "name": "cloudplay-backend",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "type": "commonjs",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5",
     "uuid": "^9.0.0"
   }
 }
@@ -1196,16 +1190,27 @@ module.exports={startSession,stopSession,getAllStatus};
 CPEOF012
 
 RUN cat > /app/backend/server.js << 'CPEOF013'
-const express = require('express');
-const crypto  = require('crypto');
-const fs      = require('fs');
-const app     = express();
+const express  = require('express');
+const http     = require('http');
+const path     = require('path');
+const crypto   = require('crypto');
+const fs       = require('fs');
+
+const app    = express();
+const server = http.createServer(app);
 app.use(express.json());
 
-const TOKENS  = new Set();
+// ── Статика ───────────────────────────────────────────────────────
+const DIST   = path.join(__dirname, '../frontend/dist');
+const NOVNC  = '/opt/novnc';
+
+app.use(express.static(DIST));
+app.use('/novnc', express.static(NOVNC));
+
+// ── Auth ──────────────────────────────────────────────────────────
+const TOKENS   = new Set();
 const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
 
-// ── Auth (не залежить ні від чого) ──────────────────────────────
 app.post('/api/auth/login', (req, res) => {
   if (!req.body || req.body.password !== PASSWORD)
     return res.status(401).json({ success:false, error:'Невірний пароль' });
@@ -1222,20 +1227,16 @@ function auth(req, res, next) {
   next();
 }
 
-// ── Session Manager (lazy load — не крашить сервер якщо помилка) ─
+// ── Session Manager (lazy) ────────────────────────────────────────
 let sm = null;
 function getSM() {
-  if (!sm) {
-    try { sm = require('./sessionManager'); }
-    catch(e) { console.error('[SM] load error:', e.message); }
-  }
+  if (!sm) try { sm = require('./sessionManager'); } catch(e) { console.error('[SM]', e.message); }
   return sm;
 }
 
-// ── Sessions ─────────────────────────────────────────────────────
 app.post('/api/sessions/start/:type', auth, async (req, res) => {
   const mgr = getSM();
-  if (!mgr) return res.status(503).json({ success:false, error:'Session manager unavailable' });
+  if (!mgr) return res.status(503).json({ success:false, error:'SM unavailable' });
   const { type } = req.params;
   if (!['browser','desktop','phone'].includes(type))
     return res.status(400).json({ success:false, error:'Bad type' });
@@ -1243,9 +1244,7 @@ app.post('/api/sessions/start/:type', auth, async (req, res) => {
     await mgr.startSession(type);
     res.json({ success:true,
       vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true` });
-  } catch(e) {
-    res.status(500).json({ success:false, error:e.message });
-  }
+  } catch(e) { res.status(500).json({ success:false, error:e.message }); }
 });
 
 app.post('/api/sessions/stop/:type', auth, async (req, res) => {
@@ -1259,27 +1258,56 @@ app.get('/api/sessions/status', auth, (req, res) => {
   res.json(mgr ? mgr.getAllStatus() : {browser:{running:false},desktop:{running:false},phone:{running:false}});
 });
 
-// ── Stats ─────────────────────────────────────────────────────────
 app.get('/api/stats', auth, (req, res) => {
   try {
-    const mem  = fs.readFileSync('/proc/meminfo','utf8');
+    const mem   = fs.readFileSync('/proc/meminfo','utf8');
     const total = parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
     const avail = parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
-    const mgr  = getSM();
-    res.json({ memory:{ total:Math.round(total), used:Math.round(total-avail) },
-      uptime:Math.floor(process.uptime()),
-      sessions: mgr ? mgr.getAllStatus() : {} });
-  } catch { res.json({ memory:{total:0,used:0}, uptime:0, sessions:{} }); }
+    res.json({ memory:{total:Math.round(total),used:Math.round(total-avail)},
+      uptime:Math.floor(process.uptime()), sessions: getSM()?.getAllStatus()||{} });
+  } catch { res.json({memory:{total:0,used:0},uptime:0,sessions:{}}); }
 });
 
-app.get('/api/health', (req, res) => res.json({ status:'ok', version:'1.3' }));
+app.get('/api/health', (req, res) => res.json({ status:'ok', version:'1.4' }));
+
+// ── WebSocket proxy для noVNC ─────────────────────────────────────
+const WS_PORTS = { browser:6901, desktop:6902, phone:6903 };
+
+server.on('upgrade', (req, socket, head) => {
+  const m = req.url.match(/^\/websockify\/(\w+)/);
+  if (!m) { socket.destroy(); return; }
+  const port = WS_PORTS[m[1]];
+  if (!port) { socket.destroy(); return; }
+
+  const net = require('net');
+  const conn = net.connect(port, '127.0.0.1', () => {
+    // Websockify handshake
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Upgrade: websocket\r\n' +
+      'Connection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${require('crypto')
+        .createHash('sha1')
+        .update((req.headers['sec-websocket-key']||'') + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+        .digest('base64')}\r\n\r\n`
+    );
+    conn.pipe(socket);
+    socket.pipe(conn);
+  });
+  conn.on('error', () => socket.destroy());
+  socket.on('error', () => conn.destroy());
+});
+
+// ── SPA fallback ──────────────────────────────────────────────────
+app.get('*', (req, res) => {
+  res.sendFile(path.join(DIST, 'index.html'));
+});
 
 // ── Start ─────────────────────────────────────────────────────────
-const PORT = parseInt(process.env.API_PORT||'3001');
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`✅ CloudPlay API v1.3 on :${PORT}`);
-  // Preload session manager
-  getSM();
+const PORT = parseInt(process.env.PORT || '8080');
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ CloudPlay v1.4 на порту ${PORT}`);
+  getSM(); // preload
 });
 
 CPEOF013
@@ -1482,90 +1510,7 @@ function go(v){
 
 CPEOF014
 
-RUN cat > /app/nginx.conf << 'CPEOF015'
-worker_processes 1;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 512;
-}
-
-http {
-    include       /etc/nginx/mime.types;
-    default_type  application/octet-stream;
-    sendfile      on;
-    keepalive_timeout 65;
-
-    # Gzip
-    gzip on;
-    gzip_types text/plain text/css application/javascript application/json;
-
-    server {
-        listen 8080;
-        server_name _;
-
-        # ── noVNC static client ────────────────────────────────
-        location /novnc/ {
-            alias /opt/novnc/;
-            try_files $uri $uri/ =404;
-        }
-
-        # ── WebSocket proxy → websockify (browser) ─────────────
-        location /websockify/browser {
-            proxy_pass http://127.0.0.1:6901;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }
-
-        # ── WebSocket proxy → websockify (desktop) ─────────────
-        location /websockify/desktop {
-            proxy_pass http://127.0.0.1:6902;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }
-
-        # ── WebSocket proxy → websockify (phone) ───────────────
-        location /websockify/phone {
-            proxy_pass http://127.0.0.1:6903;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }
-
-        # ── API → Node.js backend ──────────────────────────────
-        location /api/ {
-            proxy_pass http://127.0.0.1:3001;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_read_timeout 60s;
-        }
-
-        # ── React SPA ──────────────────────────────────────────
-        location / {
-            root /app/frontend/dist;
-            try_files $uri $uri/ /index.html;
-            expires 1h;
-            add_header Cache-Control "public, no-transform";
-        }
-    }
-}
-
-CPEOF015
-
-RUN cat > /app/supervisord.conf << 'CPEOF016'
+RUN cat > /app/supervisord.conf << 'CPEOF015'
 [supervisord]
 nodaemon=true
 logfile=/var/log/supervisor/supervisord.log
@@ -1573,29 +1518,20 @@ pidfile=/var/run/supervisord.pid
 loglevel=info
 user=root
 
-[program:nginx]
-command=/usr/sbin/nginx -g "daemon off;" -c /app/nginx.conf
-autostart=true
-autorestart=true
-startretries=5
-priority=10
-stdout_logfile=/var/log/supervisor/nginx.log
-stderr_logfile=/var/log/supervisor/nginx.err.log
-
 [program:backend]
 command=node /app/backend/server.js
 directory=/app/backend
 autostart=true
 autorestart=true
 startretries=10
-priority=20
-environment=NODE_ENV="production",API_PORT="3001"
+priority=10
+environment=NODE_ENV="production",CLOUDPLAY_PASSWORD="%(ENV_CLOUDPLAY_PASSWORD)s"
 stdout_logfile=/var/log/supervisor/backend.log
 stderr_logfile=/var/log/supervisor/backend.err.log
 
-CPEOF016
+CPEOF015
 
-RUN cat > /app/ob-rc.xml << 'CPEOF017'
+RUN cat > /app/ob-rc.xml << 'CPEOF016'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <theme><name>Arc-Dark</name>
@@ -1626,9 +1562,9 @@ RUN cat > /app/ob-rc.xml << 'CPEOF017'
   </mouse>
 </openbox_config>
 
-CPEOF017
+CPEOF016
 
-RUN cat > /app/ob-menu.xml << 'CPEOF018'
+RUN cat > /app/ob-menu.xml << 'CPEOF017'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu>
   <menu id="root-menu" label="CloudPlay PC">
@@ -1655,9 +1591,9 @@ RUN cat > /app/ob-menu.xml << 'CPEOF018'
   </menu>
 </openbox_menu>
 
-CPEOF018
+CPEOF017
 
-RUN cat > /app/tint2rc << 'CPEOF019'
+RUN cat > /app/tint2rc << 'CPEOF018'
 # CloudPlay tint2 config
 rounded = 0
 border_width = 0
@@ -1740,7 +1676,7 @@ border_width = 0
 background_color = #1f6feb 80
 border_color = #1f6feb 100
 
-CPEOF019
+CPEOF018
 
 RUN ln -sf /app/ob-rc.xml /root/.config/openbox/rc.xml     && ln -sf /app/ob-menu.xml /root/.config/openbox/menu.xml
 
