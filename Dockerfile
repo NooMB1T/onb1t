@@ -8,10 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cinnamon cinnamon-core nemo \
     xfce4 xfce4-terminal \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
+    plank \
     mousepad vlc qbittorrent \
-    gimp libreoffice audacity \
+    gimp inkscape \
+    libreoffice audacity \
     flameshot keepassxc btop \
-    telegram-desktop \
+    telegram-desktop filezilla remmina \
     openbox tint2 feh xterm \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
@@ -985,227 +987,200 @@ const fs = require('fs');
 
 const CONFIGS = {
   browser: { display:':1', vncPort:5901, wsPort:6901, geo:'1920x1080' },
-  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1366x768' },
+  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1366x768'  },
   phone:   { display:':3', vncPort:5903, wsPort:6903, geo:'412x915'   },
 };
 const sessions = {};
 
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function sp(cmd,args,env={}){
-  const p=spawn(cmd,args,{env:{...process.env,...env},stdio:'ignore',detached:false});
-  p.on('error',e=>console.error(`[${cmd}]:`,e.message));
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+function sp(cmd, args, env = {}){
+  const p = spawn(cmd, args, {
+    env: { ...process.env, ...env },
+    stdio: 'ignore', detached: false,
+  });
+  p.on('error', e => console.error('[' + cmd + ']:', e.message));
   return p;
 }
-async function waitPort(port,tries=50){
-  for(let i=0;i<tries;i++){
-    try{ execSync(`bash -c 'echo > /dev/tcp/127.0.0.1/${port}'`,{timeout:500,stdio:'ignore'}); return true; }catch{}
-    await sleep(300);
-  }
-  return false;
-}
-async function waitDisplay(d,tries=40){
-  for(let i=0;i<tries;i++){
-    if(spawnSync('xdpyinfo',['-display',d],{timeout:1000,stdio:'ignore'}).status===0) return true;
+
+async function waitPort(port, tries = 50){
+  for(let i = 0; i < tries; i++){
+    try{
+      execSync("bash -c 'echo > /dev/tcp/127.0.0.1/" + port + "'", { timeout:500, stdio:'ignore' });
+      return true;
+    }catch{}
     await sleep(300);
   }
   return false;
 }
 
+async function waitDisplay(d, tries = 40){
+  for(let i = 0; i < tries; i++){
+    if(spawnSync('xdpyinfo', ['-display', d], { timeout:1000, stdio:'ignore' }).status === 0)
+      return true;
+    await sleep(300);
+  }
+  return false;
+}
 
 function createDesktopShortcuts(){
-  const d = '/root/Desktop';
-  require('fs').mkdirSync(d, {recursive:true});
+  const dir = '/root/Desktop';
+  fs.mkdirSync(dir, { recursive: true });
   const apps = [
-    {name:'Google Chrome', exec:'/usr/local/bin/chrome %U', icon:'google-chrome'},
-    {name:'Steam',         exec:'steam',                    icon:'steam'},
-    {name:'qBittorrent',   exec:'qbittorrent',              icon:'qbittorrent'},
-    {name:'Files',         exec:'nemo',                     icon:'system-file-manager'},
-    {name:'Terminal',      exec:'xfce4-terminal',           icon:'utilities-terminal'},
-    {name:'GIMP',          exec:'gimp',                     icon:'gimp'},
-    {name:'VLC',           exec:'vlc',                      icon:'vlc'},
-    {name:'Telegram',      exec:'telegram-desktop',         icon:'telegram'},
-    {name:'LibreOffice',   exec:'libreoffice',              icon:'libreoffice-startcenter'},
-    {name:'Audacity',      exec:'audacity',                 icon:'audacity'},
-    {name:'Lutris',        exec:'lutris',                   icon:'lutris'},
-    {name:'Wine Config',   exec:'winecfg',                  icon:'wine'},
+    { name:'Chrome',       exec:'/usr/local/bin/chrome %U',   icon:'google-chrome'         },
+    { name:'Steam',        exec:'steam',                       icon:'steam'                 },
+    { name:'qBittorrent',  exec:'qbittorrent',                 icon:'qbittorrent'           },
+    { name:'Files',        exec:'nemo',                        icon:'system-file-manager'   },
+    { name:'Terminal',     exec:'xfce4-terminal',              icon:'utilities-terminal'    },
+    { name:'GIMP',         exec:'gimp',                        icon:'gimp'                  },
+    { name:'VLC',          exec:'vlc',                         icon:'vlc'                   },
+    { name:'Telegram',     exec:'telegram-desktop',            icon:'telegram'              },
+    { name:'LibreOffice',  exec:'libreoffice',                 icon:'libreoffice-startcenter'},
+    { name:'Audacity',     exec:'audacity',                    icon:'audacity'              },
+    { name:'Lutris',       exec:'lutris',                      icon:'lutris'                },
+    { name:'Wine Config',  exec:'winecfg',                     icon:'wine'                  },
+    { name:'Synaptic',     exec:'synaptic',                    icon:'synaptic'              },
+    { name:'Software',     exec:'gnome-software',              icon:'gnome-software'        },
+    { name:'KeePassXC',    exec:'keepassxc',                   icon:'keepassxc'             },
+    { name:'Screenshot',   exec:'flameshot gui',               icon:'flameshot'             },
+    { name:'Monitor',      exec:'xfce4-terminal -e btop',      icon:'utilities-system-monitor'},
+    { name:'Inkscape',     exec:'inkscape',                    icon:'inkscape'              },
+    { name:'FileZilla',    exec:'filezilla',                   icon:'filezilla'             },
+    { name:'Remmina',      exec:'remmina',                     icon:'remmina'               },
   ];
-  const fs = require('fs');
-  apps.forEach(a=>{
-    const f = d+'/'+a.name.replace(/ /g,'')+'.desktop';
+  apps.forEach(a => {
+    const f = dir + '/' + a.name.replace(/\s/g,'') + '.desktop';
     fs.writeFileSync(f,
-      '[Desktop Entry]
-Type=Application
-Name='+a.name+'
-Exec='+a.exec+'
-Icon='+a.icon+'
-Terminal=false
-');
-    try{fs.chmodSync(f,'755');}catch{}
+      '[Desktop Entry]\nType=Application\nName=' + a.name +
+      '\nExec=' + a.exec + '\nIcon=' + a.icon + '\nTerminal=false\n');
+    try{ fs.chmodSync(f, '755'); }catch{}
   });
 }
 
-function setupXFCE(){
+function setupTheme(){
   const xc = '/root/.config/xfce4/xfconf/xfce-perchannel-xml';
-  fs.mkdirSync(xc, {recursive:true});
-  fs.mkdirSync('/root/.config/autostart', {recursive:true});
+  fs.mkdirSync(xc, { recursive: true });
+  fs.mkdirSync('/root/.config/autostart', { recursive: true });
 
-  // Arc-Dark GTK тема
-  fs.writeFileSync(`${xc}/xsettings.xml`, `<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xsettings" version="1.0">
-  <property name="Net" type="empty">
-    <property name="ThemeName" type="string" value="Arc-Dark"/>
-    <property name="IconThemeName" type="string" value="Papirus-Dark"/>
-  </property>
-  <property name="Gtk" type="empty">
-    <property name="FontName" type="string" value="Sans 11"/>
-    <property name="CursorThemeName" type="string" value="Adwaita"/>
-  </property>
-</channel>`);
+  fs.writeFileSync(xc + '/xsettings.xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<channel name="xsettings" version="1.0">\n' +
+    '  <property name="Net" type="empty">\n' +
+    '    <property name="ThemeName" type="string" value="Arc-Dark"/>\n' +
+    '    <property name="IconThemeName" type="string" value="Papirus-Dark"/>\n' +
+    '  </property>\n' +
+    '  <property name="Gtk" type="empty">\n' +
+    '    <property name="FontName" type="string" value="Sans 11"/>\n' +
+    '  </property>\n' +
+    '</channel>');
 
-  // Arc-Dark вікна
-  fs.writeFileSync(`${xc}/xfwm4.xml`, `<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfwm4" version="1.0">
-  <property name="general" type="empty">
-    <property name="theme" type="string" value="Arc-Dark"/>
-    <property name="title_font" type="string" value="Sans Bold 10"/>
-    <property name="button_layout" type="string" value="|HMC"/>
-    <property name="use_compositing" type="bool" value="false"/>
-  </property>
-</channel>`);
+  fs.writeFileSync(xc + '/xfwm4.xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<channel name="xfwm4" version="1.0">\n' +
+    '  <property name="general" type="empty">\n' +
+    '    <property name="theme" type="string" value="Arc-Dark"/>\n' +
+    '    <property name="button_layout" type="string" value="|HMC"/>\n' +
+    '    <property name="use_compositing" type="bool" value="false"/>\n' +
+    '  </property>\n' +
+    '</channel>');
 
-  // Темний фон
-  fs.writeFileSync(`${xc}/xfce4-desktop.xml`, `<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfce4-desktop" version="1.0">
-  <property name="backdrop" type="empty">
-    <property name="screen0" type="empty">
-      <property name="monitor0" type="empty">
-        <property name="workspace0" type="empty">
-          <property name="image-style" type="int" value="0"/>
-          <property name="color-style" type="int" value="0"/>
-          <property name="rgba1" type="array">
-            <value type="double" value="0.0509"/>
-            <value type="double" value="0.0667"/>
-            <value type="double" value="0.0902"/>
-            <value type="double" value="1.000"/>
-          </property>
-        </property>
-      </property>
-    </property>
-  </property>
-</channel>`);
+  // Chrome wrapper
+  fs.writeFileSync('/usr/local/bin/chrome',
+    '#!/bin/bash\nexec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"\n');
+  try{ fs.chmodSync('/usr/local/bin/chrome', '755'); }catch{}
 
-  // Chrome wrapper (додає --no-sandbox для root)
-  fs.writeFileSync('/usr/local/bin/chrome', `#!/bin/bash
-exec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"
-`);
-  fs.chmodSync('/usr/local/bin/chrome', '755');
+  // Autostart Chrome
+  fs.writeFileSync('/root/.config/autostart/chrome.desktop',
+    '[Desktop Entry]\nType=Application\nName=Chrome\n' +
+    'Exec=/usr/local/bin/chrome https://www.google.com\nTerminal=false\n');
 
-  // Chrome .desktop щоб XFCE знав про нього
-  fs.writeFileSync('/usr/share/applications/chrome-wrapper.desktop', `[Desktop Entry]
-Version=1.0
-Name=Google Chrome
-Comment=Web Browser
-Exec=/usr/local/bin/chrome %U
-Terminal=false
-Type=Application
-Icon=google-chrome
-Categories=Network;WebBrowser;
-MimeType=text/html;text/xml;application/xhtml_xml;x-scheme-handler/http;x-scheme-handler/https;
-`);
-
-  // Автозапуск Chrome при старті XFCE
-  fs.writeFileSync('/root/.config/autostart/chrome.desktop', `[Desktop Entry]
-Type=Application
-Name=Google Chrome
-Exec=/usr/local/bin/chrome https://www.google.com
-StartupNotify=false
-Terminal=false`);
-
-  // Встановлюємо Chrome як браузер за замовчуванням
-  try{ execSync('update-alternatives --set x-www-browser /usr/local/bin/chrome 2>/dev/null || true'); }catch{}
-  try{ execSync('xdg-mime default chrome-wrapper.desktop x-scheme-handler/http 2>/dev/null || true'); }catch{}
-  try{ execSync('xdg-mime default chrome-wrapper.desktop x-scheme-handler/https 2>/dev/null || true'); }catch{}
+  // Autostart Plank dock
+  fs.writeFileSync('/root/.config/autostart/plank.desktop',
+    '[Desktop Entry]\nType=Application\nName=Plank\nExec=plank\nTerminal=false\n');
 }
 
 async function startSession(type){
   if(sessions[type]) await stopSession(type);
-  const cfg=CONFIGS[type];
-  const procs={};
-  console.log(`▶ [${type}]...`);
+  const cfg = CONFIGS[type];
+  const procs = {};
+  console.log('Starting [' + type + ']...');
 
-  fs.mkdirSync('/root/.vnc',{recursive:true});
+  fs.mkdirSync('/root/.vnc', { recursive: true });
 
-  procs.vnc=sp('Xvnc',[cfg.display,
-    '-geometry',cfg.geo,'-depth','24',
-    '-SecurityTypes','None','-localhost','no',
-    '-rfbport',String(cfg.vncPort),'-dpi','96','-AcceptSetDesktopSize'],{HOME:'/root'});
+  procs.vnc = sp('Xvnc', [
+    cfg.display,
+    '-geometry', cfg.geo,
+    '-depth', '24',
+    '-SecurityTypes', 'None',
+    '-localhost', 'no',
+    '-rfbport', String(cfg.vncPort),
+    '-dpi', '96',
+    '-AcceptSetDesktopSize',
+  ], { HOME: '/root' });
 
   await waitDisplay(cfg.display);
   await waitPort(cfg.vncPort);
   await sleep(300);
 
-  sp('xsetroot',['-solid','#0d1117','-display',cfg.display]);
+  sp('xsetroot', ['-solid', '#0d1117', '-display', cfg.display]);
 
-  if(type==='browser'){
-    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
-      {DISPLAY:cfg.display,HOME:'/root'});
+  if(type === 'browser'){
+    setupTheme();
+    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'],
+      { DISPLAY: cfg.display, HOME: '/root' });
     await sleep(700);
-    procs.app=sp('/usr/local/bin/chrome',
-      ['--start-maximized','https://www.google.com'],
-      {DISPLAY:cfg.display,HOME:'/root'});
+    procs.app = sp('/usr/local/bin/chrome',
+      ['--start-maximized', 'https://www.google.com'],
+      { DISPLAY: cfg.display, HOME: '/root' });
 
-  } else if(type==='desktop'){
-    fs.mkdirSync('/tmp/xdg',{recursive:true});
+  } else if(type === 'desktop'){
+    fs.mkdirSync('/tmp/xdg', { recursive: true });
     createDesktopShortcuts();
-    setupXFCE();
+    setupTheme();
 
-    procs.wm=sp('bash',['-c',`
-      export DISPLAY=${cfg.display}
-      export HOME=/root
-      export XDG_RUNTIME_DIR=/tmp/xdg
-      export XDG_SESSION_TYPE=x11
-      export XDG_SESSION_DESKTOP=cinnamon
-      export XDG_CURRENT_DESKTOP=X-Cinnamon
-      export XKL_XMODMAP_DISABLE=1
-      export LIBGL_ALWAYS_INDIRECT=1
-      export DBUS_SESSION_BUS_ADDRESS=autolaunch:
-      dbus-run-session -- cinnamon-session 2>/tmp/cinnamon.log || startxfce4 2>/tmp/xfce.log
-    `],{DISPLAY:cfg.display,HOME:'/root',XDG_RUNTIME_DIR:'/tmp/xdg',
-      XDG_SESSION_TYPE:'x11',XDG_SESSION_DESKTOP:'cinnamon',
-      XDG_CURRENT_DESKTOP:'X-Cinnamon',XKL_XMODMAP_DISABLE:'1'});
+    procs.wm = sp('bash', ['-c',
+      'export DISPLAY=' + cfg.display + ' HOME=/root XDG_RUNTIME_DIR=/tmp/xdg ' +
+      'XDG_SESSION_TYPE=x11 XDG_SESSION_DESKTOP=cinnamon XDG_CURRENT_DESKTOP=X-Cinnamon ' +
+      'XKL_XMODMAP_DISABLE=1 DBUS_SESSION_BUS_ADDRESS=autolaunch: && ' +
+      'dbus-run-session -- cinnamon-session 2>/tmp/cinnamon.log || startxfce4 2>/tmp/xfce.log'
+    ], { DISPLAY: cfg.display, HOME: '/root', XDG_RUNTIME_DIR: '/tmp/xdg' });
 
   } else {
-    procs.wm=sp('openbox',['--config-file','/app/ob-rc.xml'],
-      {DISPLAY:cfg.display,HOME:'/root'});
+    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'],
+      { DISPLAY: cfg.display, HOME: '/root' });
     await sleep(700);
-    procs.app=sp('/usr/local/bin/chrome',
-      ['--app=file:///app/backend/android.html',
-       '--window-size=412,915','--window-position=0,0'],
-      {DISPLAY:cfg.display,HOME:'/root'});
+    procs.app = sp('/usr/local/bin/chrome',
+      ['--app=file:///app/backend/android.html', '--window-size=412,915', '--window-position=0,0'],
+      { DISPLAY: cfg.display, HOME: '/root' });
   }
 
-  await sleep(type==='desktop'?6000:5000);
-  procs.ws=sp('websockify',[String(cfg.wsPort),`localhost:${cfg.vncPort}`]);
+  await sleep(type === 'desktop' ? 7000 : 5000);
+
+  procs.ws = sp('websockify', [String(cfg.wsPort), 'localhost:' + cfg.vncPort]);
   await waitPort(cfg.wsPort);
 
-  sessions[type]={id:uuidv4(),type,procs,startTime:new Date()};
-  console.log(`✅ [${type}] ready`);
+  sessions[type] = { id: uuidv4(), type, procs, startTime: new Date() };
+  console.log('[' + type + '] ready');
   return sessions[type];
 }
 
 async function stopSession(type){
-  const s=sessions[type]; if(!s)return;
+  const s = sessions[type];
+  if(!s) return;
   for(const p of Object.values(s.procs).reverse())
-    try{if(p&&!p.killed)p.kill('SIGTERM');}catch{}
+    try{ if(p && !p.killed) p.kill('SIGTERM'); }catch{}
   delete sessions[type];
+  await sleep(500);
 }
+
 function getAllStatus(){
-  const o={browser:{running:false},desktop:{running:false},phone:{running:false}};
-  for(const[t,s]of Object.entries(sessions))
-    o[t]=s?{running:true,id:s.id,startTime:s.startTime}:{running:false};
+  const o = { browser:{running:false}, desktop:{running:false}, phone:{running:false} };
+  for(const [t, s] of Object.entries(sessions))
+    o[t] = s ? { running:true, id:s.id, startTime:s.startTime } : { running:false };
   return o;
 }
-module.exports={startSession,stopSession,getAllStatus};
+
+module.exports = { startSession, stopSession, getAllStatus };
 
 CPEOF012
 
