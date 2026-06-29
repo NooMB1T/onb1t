@@ -60,7 +60,7 @@ RUN mkdir -p /opt/novnc \
 
 RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /tmp/xdg \
-    && mkdir -p /root/.config/openbox /root/.vnc
+    && mkdir -p /root/.config/openbox /root/.vnc /root/Desktop
 
 RUN cat > /app/frontend/package.json << 'CPEOF000'
 {
@@ -672,17 +672,15 @@ RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CPEOF008'
 import { useState, useCallback, useRef, useEffect } from 'react';
 
 const META = {
-  browser: { icon:'🌐', name:'Cloud Browser', sub:'Google Chrome', boot:20 },
-  desktop: { icon:'🖥️', name:'Cloud PC', sub:'Ubuntu XFCE', boot:35 },
+  browser: { icon:'🌐', name:'Cloud Browser', sub:'Chrome', boot:20 },
+  desktop: { icon:'🖥️', name:'Cloud PC', sub:'Cinnamon Linux', boot:35 },
   phone:   { icon:'📱', name:'Cloud Phone', sub:'Android UI', boot:15 },
 };
 
 export default function SessionViewer({ type, url, onBack }){
-  const [loaded, setLoaded]       = useState(false);
-  const [countdown, setCountdown] = useState(META[type]?.boot||25);
-  const [retries, setRetries]     = useState(0);
-  const [zoom, setZoom]           = useState(1);
-  const [showTools, setShowTools] = useState(true);
+  const [loaded, setLoaded]         = useState(false);
+  const [countdown, setCountdown]   = useState(META[type]?.boot||25);
+  const [retries, setRetries]       = useState(0);
   const iframeRef = useRef(null);
   const meta = META[type]||META.browser;
 
@@ -705,13 +703,19 @@ export default function SessionViewer({ type, url, onBack }){
     }
   };
 
-  const fullscreen=()=>{
-    if(iframeRef.current?.requestFullscreen) iframeRef.current.requestFullscreen();
-    else if(url) window.open(url,'_blank');
+  // Відкриваємо noVNC в новій вкладці — повний екран на телефоні
+  const openTab=()=>{
+    if(vncUrl) window.open(vncUrl,'_blank');
   };
 
+  const fullscreen=()=>{
+    if(iframeRef.current?.requestFullscreen) iframeRef.current.requestFullscreen();
+    else openTab();
+  };
+
+  // resize=remote — десктоп підстроюється під розмір екрану
   const vncUrl = url
-    ? `${url}&resize=scale&quality=7&compression=2&reconnect_delay=3000`
+    ? `${url}&resize=remote&quality=7&compression=2&reconnect_delay=3000&bell=0`
     : null;
 
   return (
@@ -726,57 +730,52 @@ export default function SessionViewer({ type, url, onBack }){
             <div style={s.sub}>{meta.sub}</div>
           </div>
         </div>
-        <div style={{...s.status, color:loaded?'#10b981':'#f59e0b'}}>
-          <span style={{...s.dot,background:loaded?'#10b981':'#f59e0b',
-            boxShadow:`0 0 6px ${loaded?'#10b981':'#f59e0b'}`}}/>
+        <div style={{...s.dot_wrap, color:loaded?'#10b981':'#f59e0b'}}>
+          <span style={{...s.dot,background:loaded?'#10b981':'#f59e0b'}}/>
           {loaded?'Активна':'Запуск...'}
         </div>
-        <button style={s.iconBtn} onClick={retry} title="Перезапустити">↺</button>
-        <button style={s.iconBtn} onClick={()=>setShowTools(t=>!t)} title="Інструменти">🛠</button>
-        <button style={s.iconBtn} onClick={fullscreen} title="Повний екран">⛶</button>
       </div>
 
-      {/* Mobile controls */}
-      {showTools && loaded && (
-        <div style={s.tools}>
-          <button style={s.tool} onClick={()=>setZoom(z=>Math.min(z+0.15,2))} title="Збільшити">🔍+</button>
-          <button style={s.tool} onClick={()=>setZoom(z=>Math.max(z-0.15,0.5))} title="Зменшити">🔍−</button>
-          <button style={s.tool} onClick={()=>setZoom(1)} title="Скинути масштаб">⊡</button>
-          <div style={s.toolDiv}/>
-          <button style={s.tool}
-            onClick={()=>iframeRef.current?.contentWindow?.postMessage('keyboardShow',  '*')}
-            title="Клавіатура">⌨️</button>
-          <button style={s.tool}
-            onClick={()=>iframeRef.current?.contentWindow?.postMessage('scroll','*')}
-            title="Скрол режим">☰</button>
-          <div style={s.toolDiv}/>
-          <span style={s.zoomLabel}>{Math.round(zoom*100)}%</span>
-        </div>
-      )}
+      {/* Action buttons */}
+      <div style={s.actions}>
+        <button style={s.actBtn} onClick={retry}>↺ Перепідключити</button>
+        <button style={{...s.actBtn,...s.actBtnPrimary}} onClick={openTab}>
+          ⛶ Відкрити на повний екран
+        </button>
+        <button style={s.actBtn} onClick={fullscreen}>📱 Fullscreen</button>
+      </div>
 
       {/* Content */}
       <div style={s.content}>
         {!loaded&&(
           <div style={s.overlay}>
             <div style={s.card}>
-              <div style={{fontSize:48}}>{meta.icon}</div>
+              <div style={{fontSize:52}}>{meta.icon}</div>
               <div style={s.spinner}/>
               <p style={s.lt}>Запускаємо {meta.name}...</p>
               {countdown>0
-                ?<div style={s.cw}><div style={s.cn}>{countdown}</div><div style={s.cs}>секунд</div></div>
+                ?<div style={s.cw}>
+                  <div style={s.cn}>{countdown}</div>
+                  <div style={s.cs}>секунд</div>
+                </div>
                 :<p style={s.cs}>Майже готово...</p>}
-              <div style={s.pb}><div style={{...s.pf,
-                width:`${Math.max(5,100-(countdown/(meta.boot||25))*100)}%`}}/></div>
-              <p style={s.hint}>Якщо екран чорний після завантаження — натисни ↺</p>
-              <button style={s.retryBtn} onClick={retry}>↺ Перепідключити</button>
+              <div style={s.pb}>
+                <div style={{...s.pf,
+                  width:`${Math.max(5,100-(countdown/(meta.boot||25))*100)}%`}}/>
+              </div>
+              <p style={s.hint}>
+                💡 Для кращого досвіду натисни<br/>
+                <b>"Відкрити на повний екран"</b>
+              </p>
+              <button style={s.retryBtn} onClick={openTab}>
+                ⛶ Відкрити на повний екран
+              </button>
             </div>
           </div>
         )}
         {vncUrl&&(
           <iframe ref={iframeRef} key={retries} src={vncUrl}
-            style={{...s.frame, opacity:loaded?1:0,
-              transform:`scale(${zoom})`, transformOrigin:'top left',
-              width:`${100/zoom}%`, height:`${100/zoom}%`}}
+            style={{...s.frame, opacity:loaded?1:0}}
             onLoad={handleLoad}
             allow="clipboard-read; clipboard-write; fullscreen"
             title={meta.name}/>
@@ -784,7 +783,6 @@ export default function SessionViewer({ type, url, onBack }){
       </div>
       <style>{`
         @keyframes sp{to{transform:rotate(360deg)}}
-        @keyframes dp{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.5)}50%{box-shadow:0 0 0 5px rgba(16,185,129,0)}}
       `}</style>
     </div>
   );
@@ -794,50 +792,46 @@ const s={
   root:{display:'flex',flexDirection:'column',height:'100vh',background:'#030308',
     fontFamily:"'Space Grotesk',sans-serif",color:'#fff'},
   bar:{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',
-    background:'rgba(255,255,255,.04)',borderBottom:'1px solid rgba(255,255,255,.07)',flexShrink:0},
+    background:'rgba(255,255,255,.04)',borderBottom:'1px solid rgba(255,255,255,.07)',
+    flexShrink:0},
   backBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff',padding:'7px 12px',borderRadius:8,cursor:'pointer',fontSize:13,
+    color:'#fff',padding:'8px 14px',borderRadius:8,cursor:'pointer',fontSize:14,
     fontFamily:"'Space Grotesk',sans-serif",flexShrink:0},
   info:{flex:1,display:'flex',alignItems:'center',gap:8},
   name:{fontSize:13,fontWeight:600},
-  sub:{fontSize:10,color:'rgba(255,255,255,.35)',fontFamily:"'Inter',sans-serif"},
-  status:{display:'flex',alignItems:'center',gap:6,fontSize:11,
-    fontFamily:"'Inter',sans-serif",flexShrink:0},
+  sub:{fontSize:10,color:'rgba(255,255,255,.35)'},
+  dot_wrap:{display:'flex',alignItems:'center',gap:6,fontSize:11,flexShrink:0},
   dot:{display:'inline-block',width:7,height:7,borderRadius:'50%'},
-  iconBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff',width:32,height:32,borderRadius:7,cursor:'pointer',fontSize:14,
-    display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0},
-  tools:{display:'flex',alignItems:'center',gap:6,padding:'6px 14px',
-    background:'rgba(255,255,255,.03)',borderBottom:'1px solid rgba(255,255,255,.05)',
-    flexShrink:0,overflowX:'auto'},
-  tool:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff',padding:'5px 10px',borderRadius:7,cursor:'pointer',fontSize:13,
-    whiteSpace:'nowrap',fontFamily:"'Inter',sans-serif"},
-  toolDiv:{width:1,height:20,background:'rgba(255,255,255,.1)',margin:'0 2px',flexShrink:0},
-  zoomLabel:{fontSize:12,color:'rgba(255,255,255,.4)',fontFamily:"'Inter',sans-serif",
-    padding:'0 4px'},
+  actions:{display:'flex',gap:8,padding:'8px 14px',
+    background:'rgba(255,255,255,.02)',borderBottom:'1px solid rgba(255,255,255,.06)',
+    flexShrink:0,flexWrap:'wrap'},
+  actBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.12)',
+    color:'rgba(255,255,255,.8)',padding:'9px 14px',borderRadius:8,cursor:'pointer',
+    fontSize:13,fontWeight:500,fontFamily:"'Space Grotesk',sans-serif",whiteSpace:'nowrap'},
+  actBtnPrimary:{background:'rgba(79,70,229,.25)',borderColor:'rgba(79,70,229,.5)',
+    color:'#818cf8',fontWeight:700},
   content:{flex:1,position:'relative',overflow:'hidden'},
   overlay:{position:'absolute',inset:0,zIndex:10,background:'#030308',
-    display:'flex',alignItems:'center',justifyContent:'center'},
+    display:'flex',alignItems:'center',justifyContent:'center',padding:16},
   card:{display:'flex',flexDirection:'column',alignItems:'center',gap:14,
-    padding:'36px 28px',background:'rgba(255,255,255,.04)',
+    padding:'32px 24px',background:'rgba(255,255,255,.04)',
     border:'1px solid rgba(255,255,255,.08)',borderRadius:20,
-    maxWidth:300,width:'90%',textAlign:'center'},
+    maxWidth:320,width:'100%',textAlign:'center'},
   spinner:{width:40,height:40,border:'3px solid rgba(255,255,255,.08)',
     borderTopColor:'#818cf8',borderRadius:'50%',animation:'sp .9s linear infinite'},
   lt:{fontSize:16,fontWeight:600,color:'rgba(255,255,255,.85)'},
   cw:{display:'flex',flexDirection:'column',alignItems:'center',gap:2},
-  cn:{fontSize:44,fontWeight:700,color:'#818cf8',lineHeight:1,fontVariantNumeric:'tabular-nums'},
-  cs:{fontSize:12,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif"},
+  cn:{fontSize:48,fontWeight:700,color:'#818cf8',lineHeight:1},
+  cs:{fontSize:12,color:'rgba(255,255,255,.3)'},
   pb:{width:'100%',height:3,background:'rgba(255,255,255,.08)',borderRadius:2,overflow:'hidden'},
   pf:{height:'100%',background:'linear-gradient(90deg,#4f46e5,#818cf8)',
     borderRadius:2,transition:'width 1s linear'},
-  hint:{fontSize:11,color:'rgba(255,255,255,.25)',fontFamily:"'Inter',sans-serif",lineHeight:1.5},
-  retryBtn:{background:'rgba(129,140,248,.15)',border:'1px solid rgba(129,140,248,.3)',
-    color:'#818cf8',padding:'8px 18px',borderRadius:9,cursor:'pointer',
-    fontSize:13,fontWeight:600,fontFamily:"'Space Grotesk',sans-serif"},
-  frame:{position:'absolute',top:0,left:0,border:'none',
-    transition:'opacity .5s ease'},
+  hint:{fontSize:12,color:'rgba(255,255,255,.35)',lineHeight:1.6},
+  retryBtn:{background:'rgba(79,70,229,.2)',border:'1px solid rgba(79,70,229,.4)',
+    color:'#818cf8',padding:'10px 20px',borderRadius:10,cursor:'pointer',
+    fontSize:14,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif",width:'100%'},
+  frame:{position:'absolute',inset:0,width:'100%',height:'100%',
+    border:'none',transition:'opacity .5s ease'},
 };
 
 CPEOF008
@@ -991,7 +985,7 @@ const fs = require('fs');
 
 const CONFIGS = {
   browser: { display:':1', vncPort:5901, wsPort:6901, geo:'1920x1080' },
-  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1920x1080' },
+  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1366x768' },
   phone:   { display:':3', vncPort:5903, wsPort:6903, geo:'412x915'   },
 };
 const sessions = {};
@@ -1015,6 +1009,39 @@ async function waitDisplay(d,tries=40){
     await sleep(300);
   }
   return false;
+}
+
+
+function createDesktopShortcuts(){
+  const d = '/root/Desktop';
+  require('fs').mkdirSync(d, {recursive:true});
+  const apps = [
+    {name:'Google Chrome', exec:'/usr/local/bin/chrome %U', icon:'google-chrome'},
+    {name:'Steam',         exec:'steam',                    icon:'steam'},
+    {name:'qBittorrent',   exec:'qbittorrent',              icon:'qbittorrent'},
+    {name:'Files',         exec:'nemo',                     icon:'system-file-manager'},
+    {name:'Terminal',      exec:'xfce4-terminal',           icon:'utilities-terminal'},
+    {name:'GIMP',          exec:'gimp',                     icon:'gimp'},
+    {name:'VLC',           exec:'vlc',                      icon:'vlc'},
+    {name:'Telegram',      exec:'telegram-desktop',         icon:'telegram'},
+    {name:'LibreOffice',   exec:'libreoffice',              icon:'libreoffice-startcenter'},
+    {name:'Audacity',      exec:'audacity',                 icon:'audacity'},
+    {name:'Lutris',        exec:'lutris',                   icon:'lutris'},
+    {name:'Wine Config',   exec:'winecfg',                  icon:'wine'},
+  ];
+  const fs = require('fs');
+  apps.forEach(a=>{
+    const f = d+'/'+a.name.replace(/ /g,'')+'.desktop';
+    fs.writeFileSync(f,
+      '[Desktop Entry]
+Type=Application
+Name='+a.name+'
+Exec='+a.exec+'
+Icon='+a.icon+'
+Terminal=false
+');
+    try{fs.chmodSync(f,'755');}catch{}
+  });
 }
 
 function setupXFCE(){
@@ -1111,7 +1138,7 @@ async function startSession(type){
   procs.vnc=sp('Xvnc',[cfg.display,
     '-geometry',cfg.geo,'-depth','24',
     '-SecurityTypes','None','-localhost','no',
-    '-rfbport',String(cfg.vncPort),'-dpi','96'],{HOME:'/root'});
+    '-rfbport',String(cfg.vncPort),'-dpi','96','-AcceptSetDesktopSize'],{HOME:'/root'});
 
   await waitDisplay(cfg.display);
   await waitPort(cfg.vncPort);
@@ -1129,6 +1156,7 @@ async function startSession(type){
 
   } else if(type==='desktop'){
     fs.mkdirSync('/tmp/xdg',{recursive:true});
+    createDesktopShortcuts();
     setupXFCE();
 
     procs.wm=sp('bash',['-c',`
