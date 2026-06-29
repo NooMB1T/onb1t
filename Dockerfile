@@ -10,10 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
     plank \
     mousepad vlc qbittorrent \
-    gimp inkscape \
-    libreoffice audacity \
+    gimp inkscape krita \
+    libreoffice audacity shotcut kdenlive \
     flameshot keepassxc btop \
-    telegram-desktop filezilla remmina \
+    telegram-desktop thunderbird \
+    filezilla remmina \
+    retroarch \
     openbox tint2 feh xterm \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
@@ -24,11 +26,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Google Chrome
 RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -f -y \
     && rm -f google-chrome-stable_current_amd64.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Discord
+RUN wget -q "https://discord.com/api/download?platform=linux&format=deb" -O /tmp/discord.deb \
+    && dpkg -i /tmp/discord.deb || apt-get install -f -y \
+    && rm -f /tmp/discord.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Wine
 RUN dpkg --add-architecture i386 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -q https://dl.winehq.org/wine-builds/winehq.key \
@@ -39,22 +49,27 @@ RUN dpkg --add-architecture i386 \
     && apt-get install -y --install-recommends winehq-stable winetricks \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Lutris
 RUN add-apt-repository ppa:lutris-team/lutris -y \
     && apt-get update && apt-get install -y lutris \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Steam
 RUN apt-get update && apt-get install -y steam-installer \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Flatpak + магазин
 RUN apt-get update \
     && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
     && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
@@ -715,9 +730,9 @@ export default function SessionViewer({ type, url, onBack }){
     else openTab();
   };
 
-  // resize=remote — десктоп підстроюється під розмір екрану
+  // resize=scale — десктоп підстроюється під розмір екрану
   const vncUrl = url
-    ? `${url}&resize=remote&quality=7&compression=2&reconnect_delay=3000&bell=0`
+    ? `${url}&resize=scale&quality=7&compression=2&reconnect_delay=3000&bell=0`
     : null;
 
   return (
@@ -987,7 +1002,7 @@ const fs = require('fs');
 
 const CONFIGS = {
   browser: { display:':1', vncPort:5901, wsPort:6901, geo:'1920x1080' },
-  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1366x768'  },
+  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1600x900'  },
   phone:   { display:':3', vncPort:5903, wsPort:6903, geo:'412x915'   },
 };
 const sessions = {};
@@ -1028,7 +1043,7 @@ function createDesktopShortcuts(){
   fs.mkdirSync(dir, { recursive: true });
   const apps = [
     { name:'Chrome',       exec:'/usr/local/bin/chrome %U',   icon:'google-chrome'         },
-    { name:'Steam',        exec:'steam',                       icon:'steam'                 },
+    { name:'Steam',        exec:'/usr/games/steam %U',         icon:'steam'                 },
     { name:'qBittorrent',  exec:'qbittorrent',                 icon:'qbittorrent'           },
     { name:'Files',        exec:'nemo',                        icon:'system-file-manager'   },
     { name:'Terminal',     exec:'xfce4-terminal',              icon:'utilities-terminal'    },
@@ -1047,6 +1062,15 @@ function createDesktopShortcuts(){
     { name:'Inkscape',     exec:'inkscape',                    icon:'inkscape'              },
     { name:'FileZilla',    exec:'filezilla',                   icon:'filezilla'             },
     { name:'Remmina',      exec:'remmina',                     icon:'remmina'               },
+    { name:'Discord',       exec:'/opt/discord/Discord',          icon:'discord'               },
+    { name:'Heroic',        exec:'heroic',                        icon:'heroic'                },
+    { name:'RetroArch',     exec:'retroarch',                     icon:'retroarch'             },
+    { name:'Krita',         exec:'krita',                         icon:'krita'                 },
+    { name:'Shotcut',       exec:'shotcut',                       icon:'shotcut'               },
+    { name:'Kdenlive',      exec:'kdenlive',                      icon:'kdenlive'              },
+    { name:'Thunderbird',   exec:'thunderbird',                   icon:'thunderbird'           },
+    { name:'Wireshark',     exec:'wireshark',                     icon:'wireshark'             },
+    { name:'VirtualBox',    exec:'virtualbox',                    icon:'virtualbox'            },
   ];
   apps.forEach(a => {
     const f = dir + '/' + a.name.replace(/\s/g,'') + '.desktop';
