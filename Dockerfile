@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM ubuntu:22.04
 LABEL maintainer="CloudPlay v1.5"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
@@ -89,1644 +90,905 @@ RUN mkdir -p /app/frontend/src/components /app/backend \
     && mkdir -p /var/log/supervisor /tmp/xdg \
     && mkdir -p /root/.config/openbox /root/.vnc /root/Desktop
 
-RUN cat > /app/frontend/package.json << 'CPEOF000'
-{
-  "name": "cloudplay-frontend",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite --port 5173",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.0",
-    "vite": "^5.0.0"
-  }
-}
-
-CPEOF000
-
-RUN cat > /app/frontend/vite.config.js << 'CPEOF001'
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  plugins: [react()],
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-  },
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': 'http://localhost:3001',
-    },
-  },
-});
-
-CPEOF001
-
-RUN cat > /app/frontend/index.html << 'CPEOF002'
-<!DOCTYPE html>
-<html lang="uk">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CloudPlay</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body, #root { height: 100%; }
-      body { background: #06060f; overflow-x: hidden; }
-    </style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
-
-CPEOF002
-
-RUN cat > /app/frontend/src/main.jsx << 'CPEOF003'
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
-
-CPEOF003
-
-RUN cat > /app/frontend/src/App.jsx << 'CPEOF004'
-import { useState, useCallback, useEffect } from 'react';
-import Login from './components/Login.jsx';
-import Dashboard from './components/Dashboard.jsx';
-import SessionViewer from './components/SessionViewer.jsx';
-import Toast from './components/Toast.jsx';
-
-const getToken = () => localStorage.getItem('cp_token');
-
-export default function App() {
-  const [authed, setAuthed]           = useState(!!getToken());
-  const [activeSession, setActive]    = useState(null);
-  const [sessionUrl, setUrl]          = useState(null);
-  const [toasts, setToasts]           = useState([]);
-
-  const toast = useCallback((msg, type = 'info') => {
-    const id = Date.now() + Math.random();
-    setToasts(t => [...t, { id, msg, type }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
-  }, []);
-
-  const handleLogin = async (password) => {
-    const res  = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Невірний пароль');
-    localStorage.setItem('cp_token', data.token);
-    setAuthed(true);
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('cp_token');
-    setAuthed(false);
-    setActive(null);
-    setUrl(null);
-  };
-
-  const handleStart = async (type, options = {}) => {
-    const res = await fetch(`/api/sessions/start/${type}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${getToken()}`,
-      },
-      body: JSON.stringify(options),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error);
-    setUrl(data.vncUrl);
-    setActive(type);
-    const icons = { browser: '🌐', desktop: '🖥️', phone: '📱' };
-    toast(`${icons[type]} Сесія запущена!`, 'success');
-  };
-
-  const handleStop = async () => {
-    if (activeSession) {
-      await fetch(`/api/sessions/stop/${activeSession}`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${getToken()}` },
-      });
-      toast('Сесію завершено', 'info');
-    }
-    setActive(null);
-    setUrl(null);
-  };
-
-  if (!authed)      return <><Login onLogin={handleLogin} /><Toast toasts={toasts} /></>;
-  if (activeSession) return <><SessionViewer type={activeSession} url={sessionUrl} onBack={handleStop} /><Toast toasts={toasts} /></>;
-  return <><Dashboard onStart={handleStart} onLogout={handleLogout} toast={toast} /><Toast toasts={toasts} /></>;
-}
-
-CPEOF004
-
-RUN cat > /app/frontend/src/components/Login.jsx << 'CPEOF005'
-import { useState } from 'react';
-
-export default function Login({ onLogin }) {
-  const [pw, setPw]         = useState('');
-  const [err, setErr]       = useState('');
-  const [loading, setLoad]  = useState(false);
-  const [shake, setShake]   = useState(false);
-
-  const submit = async () => {
-    if (!pw) return;
-    setLoad(true); setErr('');
-    try {
-      await onLogin(pw);
-    } catch (e) {
-      setErr(e.message);
-      setShake(true);
-      setTimeout(() => setShake(false), 500);
-    } finally { setLoad(false); }
-  };
-
-  return (
-    <div style={s.root}>
-      <Aurora />
-      <div style={{ ...s.card, animation: shake ? 'shake .4s ease' : 'none' }}>
-        <div style={s.logoWrap}>
-          <span style={s.logoIcon}>⚡</span>
-          <span style={s.logoText}>CloudPlay</span>
-          <span style={s.version}>v1.2</span>
-        </div>
-        <p style={s.hint}>Введи пароль для доступу</p>
-        <input
-          type="password"
-          placeholder="••••••••"
-          value={pw}
-          onChange={e => setPw(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && submit()}
-          style={s.input}
-          autoFocus
-        />
-        {err && <p style={s.err}>⚠ {err}</p>}
-        <button onClick={submit} disabled={loading} style={s.btn}>
-          {loading ? <span style={s.spinner} /> : 'Увійти →'}
-        </button>
-        <p style={s.footer}>Особистий хмарний сервер</p>
-      </div>
-      <style>{`
-        @keyframes shake {
-          0%,100%{transform:translateX(0)} 20%{transform:translateX(-10px)}
-          40%{transform:translateX(10px)} 60%{transform:translateX(-6px)}
-          80%{transform:translateX(6px)}
-        }
-        @keyframes spinL { to{transform:rotate(360deg)} }
-        @keyframes fadeIn { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:none} }
-      `}</style>
-    </div>
-  );
-}
-
-function Aurora() {
-  return (
-    <div style={a.wrap}>
-      <div style={{ ...a.orb, ...a.o1 }} />
-      <div style={{ ...a.orb, ...a.o2 }} />
-      <div style={{ ...a.orb, ...a.o3 }} />
-      <div style={{ ...a.orb, ...a.o4 }} />
-      <style>{`
-        @keyframes a1{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(60px,-40px)scale(1.15)}}
-        @keyframes a2{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(-50px,60px)scale(1.1)}}
-        @keyframes a3{0%,100%{transform:translate(-50%,-50%)scale(1)}50%{transform:translate(-50%,-50%)scale(1.2)}}
-        @keyframes a4{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(40px,50px)scale(0.9)}}
-      `}</style>
-    </div>
-  );
-}
-
-const s = {
-  root: { minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center',
-    background:'#030308', fontFamily:"'Space Grotesk',sans-serif", position:'relative' },
-  card: { position:'relative', zIndex:10, width:360, padding:'40px 36px',
-    background:'rgba(255,255,255,0.05)', backdropFilter:'blur(24px)',
-    border:'1px solid rgba(255,255,255,0.1)',
-    boxShadow:'0 0 0 1px rgba(255,255,255,0.04) inset, 0 40px 80px rgba(0,0,0,0.5)',
-    borderRadius:24, animation:'fadeIn .5s ease' },
-  logoWrap: { display:'flex', alignItems:'center', gap:10, marginBottom:28 },
-  logoIcon: { fontSize:32, filter:'drop-shadow(0 0 12px rgba(255,200,0,.7))' },
-  logoText: { fontSize:22, fontWeight:700, color:'#fff', letterSpacing:-0.5 },
-  version: { fontSize:11, color:'rgba(255,255,255,.3)', border:'1px solid rgba(255,255,255,.1)',
-    padding:'2px 7px', borderRadius:6, fontFamily:"'Inter',sans-serif" },
-  hint: { fontSize:14, color:'rgba(255,255,255,.45)', marginBottom:20,
-    fontFamily:"'Inter',sans-serif" },
-  input: { width:'100%', padding:'14px 16px', background:'rgba(255,255,255,.07)',
-    border:'1px solid rgba(255,255,255,.12)', borderRadius:12, color:'#fff',
-    fontSize:16, outline:'none', boxSizing:'border-box', fontFamily:"'Space Grotesk',sans-serif",
-    marginBottom:8 },
-  err: { fontSize:13, color:'#f87171', margin:'4px 0 8px', fontFamily:"'Inter',sans-serif" },
-  btn: { width:'100%', padding:'14px', background:'linear-gradient(135deg,#4f46e5,#7c3aed)',
-    border:'none', borderRadius:12, color:'#fff', fontSize:15, fontWeight:600,
-    cursor:'pointer', marginTop:8, fontFamily:"'Space Grotesk',sans-serif",
-    boxShadow:'0 4px 24px rgba(79,70,229,.4)', transition:'opacity .2s' },
-  spinner: { display:'inline-block', width:16, height:16,
-    border:'2px solid rgba(255,255,255,.3)', borderTopColor:'#fff',
-    borderRadius:'50%', animation:'spinL .7s linear infinite' },
-  footer: { textAlign:'center', fontSize:12, color:'rgba(255,255,255,.18)',
-    marginTop:24, fontFamily:"'Inter',sans-serif" },
-};
-const a = {
-  wrap: { position:'fixed', inset:0, pointerEvents:'none', overflow:'hidden' },
-  orb:  { position:'absolute', borderRadius:'50%', filter:'blur(100px)' },
-  o1: { width:700, height:700, background:'#4f46e5', opacity:.12,
-    top:-200, right:-100, animation:'a1 10s ease-in-out infinite' },
-  o2: { width:600, height:600, background:'#7c3aed', opacity:.1,
-    bottom:-150, left:-150, animation:'a2 13s ease-in-out infinite' },
-  o3: { width:400, height:400, background:'#06b6d4', opacity:.07,
-    top:'50%', left:'50%', animation:'a3 8s ease-in-out infinite' },
-  o4: { width:300, height:300, background:'#10b981', opacity:.06,
-    bottom:100, right:100, animation:'a4 11s ease-in-out infinite' },
-};
-
-CPEOF005
-
-RUN cat > /app/frontend/src/components/Dashboard.jsx << 'CPEOF006'
-import { useState, useEffect } from 'react';
-import ServiceCard from './ServiceCard.jsx';
-
-const SERVICES = [
-  { id:'browser', icon:'🌐', label:'Cloud Browser',
-    desc:'Firefox у хмарі. Повний інтернет, нічого не грузить твій пристрій.',
-    accent:'#4f46e5', g:'linear-gradient(135deg,#4f46e5,#7c3aed)', glow:'#4f46e5' },
-  { id:'desktop', icon:'🖥️', label:'Cloud PC',
-    desc:'Повноцінний Linux ПК. Firefox, файли, термінал — все через браузер.',
-    accent:'#0ea5e9', g:'linear-gradient(135deg,#0ea5e9,#2563eb)', glow:'#0ea5e9' },
-  { id:'phone', icon:'📱', label:'Cloud Phone',
-    desc:'Android-інтерфейс у хмарі. Соцмережі, ютуб, месенджери.',
-    accent:'#10b981', g:'linear-gradient(135deg,#10b981,#059669)', glow:'#10b981' },
-];
-
-export default function Dashboard({ onStart, onLogout, toast }) {
-  const [loading, setLoading]   = useState(null);
-  const [statuses, setStatuses] = useState({});
-  const [time, setTime]         = useState(new Date());
-  const [hovered, setHovered]   = useState(null);
-
-  useEffect(()=>{
-    const poll=async()=>{
-      try{
-        const r=await fetch('/api/sessions/status',{
-          headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}});
-        setStatuses(await r.json());
-      }catch{}
-    };
-    poll(); const id=setInterval(poll,5000); return()=>clearInterval(id);
-  },[]);
-
-  useEffect(()=>{ const id=setInterval(()=>setTime(new Date()),1000); return()=>clearInterval(id); },[]);
-
-  const handleStart=async(sv)=>{
-    setLoading(sv.id);
-    try{ await onStart(sv.id); }
-    catch(e){ toast(e.message,'error'); }
-    finally{ setLoading(null); }
-  };
-
-  const handleStop=async(type)=>{
-    await fetch(`/api/sessions/stop/${type}`,{method:'POST',
-      headers:{'Authorization':`Bearer ${localStorage.getItem('cp_token')}`}});
-    setStatuses(s=>({...s,[type]:{running:false}}));
-    toast('Сесію зупинено','info');
-  };
-
-  const pad=n=>String(n).padStart(2,'0');
-  const timeStr=`${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`;
-  const dateStr=time.toLocaleDateString('uk-UA',{weekday:'long',day:'numeric',month:'long'});
-  const active=Object.values(statuses).filter(s=>s?.running).length;
-
-  return (
-    <div style={s.root}>
-      <BG />
-
-      {/* TOP BAR */}
-      <header style={s.topbar}>
-        <div style={s.brand}>
-          <span style={s.brandIcon}>⚡</span>
-          <span style={s.brandName}>CloudPlay</span>
-          <span style={s.brandVer}>v1.3</span>
-        </div>
-        <div style={s.topCenter}>
-          {active>0 && (
-            <div style={s.activePill}>
-              <span style={s.activeDot}/>
-              {active} {active===1?'сесія активна':'сесії активні'}
-            </div>
-          )}
-        </div>
-        <div style={s.topRight}>
-          <div style={s.clockBox}>
-            <div style={s.clockTime}>{timeStr}</div>
-            <div style={s.clockDate}>{dateStr}</div>
-          </div>
-          <button style={s.logoutBtn} onClick={onLogout} title="Вийти">
-            <span>⏻</span>
-          </button>
-        </div>
-      </header>
-
-      {/* HERO */}
-      <div style={s.hero}>
-        <div style={s.heroInner}>
-          <p style={s.heroTag}>☁ Особистий хмарний сервер</p>
-          <h1 style={s.heroTitle}>
-            Запускай будь-що<br/>
-            <span style={s.heroGrad}>прямо в браузері</span>
-          </h1>
-          <p style={s.heroSub}>Firefox, Linux ПК або Android — без навантаження на твій девайс.</p>
-        </div>
-      </div>
-
-      {/* CARDS */}
-      <div style={s.cardsWrap}>
-        <div style={s.cards}>
-          {SERVICES.map(sv=>(
-            <ServiceCard key={sv.id} service={sv}
-              status={statuses[sv.id]}
-              loading={loading===sv.id}
-              onStart={()=>handleStart(sv)}
-              onReconnect={()=>onStart(sv.id).catch(()=>{})}
-              onStop={()=>handleStop(sv.id)}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* FOOTER */}
-      <div style={s.foot}>
-        <span style={s.footItem}>CloudPlay v1.3</span>
-        <span style={s.footDot}>·</span>
-        <span style={s.footItem}>Приватний сервер</span>
-        <span style={s.footDot}>·</span>
-        <span style={s.footItem}>2-3 користувачі</span>
-      </div>
-
-      <style>{`
-        @keyframes bg1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,-80px) scale(1.15)}}
-        @keyframes bg2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-80px,60px) scale(1.1)}}
-        @keyframes bg3{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
-        @keyframes bg4{0%,100%{transform:translate(0,0)}50%{transform:translate(50px,30px)}}
-        @keyframes gradAnim{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:none}}
-        @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.8)}}
-        @keyframes tickAnim{from{opacity:0}to{opacity:1}}
-      `}</style>
-    </div>
-  );
-}
-
-function BG(){
-  return (
-    <div style={{position:'fixed',inset:0,zIndex:0,overflow:'hidden',background:'#030308',pointerEvents:'none'}}>
-      <div style={{position:'absolute',width:1000,height:1000,borderRadius:'50%',
-        background:'radial-gradient(circle,rgba(79,70,229,.18) 0%,transparent 70%)',
-        top:-400,right:-300,filter:'blur(40px)',animation:'bg1 14s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:900,height:900,borderRadius:'50%',
-        background:'radial-gradient(circle,rgba(124,58,237,.14) 0%,transparent 70%)',
-        bottom:-400,left:-300,filter:'blur(40px)',animation:'bg2 17s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:700,height:700,borderRadius:'50%',
-        background:'radial-gradient(circle,rgba(14,165,233,.1) 0%,transparent 70%)',
-        top:'50%',left:'50%',filter:'blur(40px)',animation:'bg3 11s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',width:500,height:500,borderRadius:'50%',
-        background:'radial-gradient(circle,rgba(16,185,129,.08) 0%,transparent 70%)',
-        bottom:50,right:50,filter:'blur(40px)',animation:'bg4 15s ease-in-out infinite'}}/>
-      <div style={{position:'absolute',inset:0,
-        backgroundImage:'linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px)',
-        backgroundSize:'64px 64px'}}/>
-    </div>
-  );
-}
-
-const s={
-  root:{minHeight:'100vh',background:'transparent',fontFamily:"'Space Grotesk',sans-serif",color:'#fff',
-    display:'flex',flexDirection:'column',position:'relative'},
-  topbar:{position:'relative',zIndex:10,display:'flex',alignItems:'center',
-    padding:'12px 32px',gap:16,
-    background:'rgba(3,3,8,.85)',backdropFilter:'blur(20px)',
-    borderBottom:'1px solid rgba(255,255,255,.06)'},
-  brand:{display:'flex',alignItems:'center',gap:8,flexShrink:0},
-  brandIcon:{fontSize:22,filter:'drop-shadow(0 0 10px rgba(255,200,0,.8))'},
-  brandName:{fontSize:18,fontWeight:700,letterSpacing:'-.5px'},
-  brandVer:{fontSize:10,color:'rgba(255,255,255,.3)',border:'1px solid rgba(255,255,255,.1)',
-    padding:'2px 7px',borderRadius:5,fontFamily:"'Inter',sans-serif"},
-  topCenter:{flex:1,display:'flex',justifyContent:'center'},
-  activePill:{display:'flex',alignItems:'center',gap:7,fontSize:12,
-    color:'#10b981',background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.25)',
-    padding:'5px 14px',borderRadius:20,fontFamily:"'Inter',sans-serif",fontWeight:500},
-  activeDot:{width:7,height:7,borderRadius:'50%',background:'#10b981',
-    boxShadow:'0 0 8px #10b981',animation:'dotPulse 2s ease-in-out infinite',display:'inline-block'},
-  topRight:{display:'flex',alignItems:'center',gap:14,flexShrink:0},
-  clockBox:{textAlign:'right'},
-  clockTime:{fontSize:18,fontWeight:700,letterSpacing:'1px',lineHeight:1.2,
-    fontVariantNumeric:'tabular-nums',animation:'tickAnim .1s ease'},
-  clockDate:{fontSize:10,color:'rgba(255,255,255,.3)',fontFamily:"'Inter',sans-serif",
-    textTransform:'capitalize'},
-  logoutBtn:{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
-    color:'rgba(255,255,255,.5)',width:34,height:34,borderRadius:8,
-    cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',
-    transition:'all .2s'},
-  hero:{position:'relative',zIndex:10,padding:'72px 32px 48px',textAlign:'center'},
-  heroInner:{maxWidth:700,margin:'0 auto',animation:'fadeUp .6s ease'},
-  heroTag:{fontSize:12,fontWeight:600,letterSpacing:'2px',textTransform:'uppercase',
-    color:'rgba(255,255,255,.3)',marginBottom:20,fontFamily:"'Inter',sans-serif"},
-  heroTitle:{fontSize:'clamp(38px,6vw,72px)',fontWeight:700,lineHeight:1.08,
-    letterSpacing:'-2.5px',marginBottom:20},
-  heroGrad:{background:'linear-gradient(135deg,#818cf8 0%,#a78bfa 35%,#38bdf8 65%,#34d399 100%)',
-    backgroundSize:'300% 300%',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
-    animation:'gradAnim 6s ease infinite'},
-  heroSub:{fontSize:18,lineHeight:1.65,color:'rgba(255,255,255,.4)',
-    fontFamily:"'Inter',sans-serif",fontWeight:400},
-  cardsWrap:{position:'relative',zIndex:10,flex:1,padding:'0 24px 40px'},
-  cards:{maxWidth:1100,margin:'0 auto',display:'grid',
-    gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:20},
-  foot:{position:'relative',zIndex:10,display:'flex',alignItems:'center',justifyContent:'center',
-    gap:10,padding:'16px',borderTop:'1px solid rgba(255,255,255,.04)'},
-  footItem:{fontSize:11,color:'rgba(255,255,255,.15)',fontFamily:"'Inter',sans-serif"},
-  footDot:{color:'rgba(255,255,255,.1)'},
-};
-
-CPEOF006
-
-RUN cat > /app/frontend/src/components/ServiceCard.jsx << 'CPEOF007'
-import { useState, useEffect } from 'react';
-
-export default function ServiceCard({ service:sv, status, loading, onStart, onReconnect, onStop }){
-  const [hov, setHov]     = useState(false);
-  const [elapsed, setEl]  = useState(0);
-  const running = status?.running;
-
-  useEffect(()=>{
-    if(!running||!status?.startTime) return;
-    const tick=()=>setEl(Math.floor((Date.now()-new Date(status.startTime))/1000));
-    tick(); const id=setInterval(tick,1000); return()=>clearInterval(id);
-  },[running,status?.startTime]);
-
-  const fmt=s=>{
-    const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
-    return h>0?`${h}:${p(m)}:${p(sec)}`:`${p(m)}:${p(sec)}`;
-  };
-  const p=n=>String(n).padStart(2,'0');
-
-  return (
-    <div style={{
-      ...card,
-      borderColor: running?`${sv.accent}50`:hov?'rgba(255,255,255,.14)':'rgba(255,255,255,.07)',
-      background:  running?`${sv.accent}0c`:hov?'rgba(255,255,255,.06)':'rgba(255,255,255,.03)',
-      transform:   hov&&!loading?'translateY(-6px)':'none',
-      boxShadow:   running
-        ?`0 0 0 1px ${sv.accent}25 inset, 0 24px 64px ${sv.accent}18`
-        :hov?'0 24px 48px rgba(0,0,0,.35)':'0 4px 20px rgba(0,0,0,.2)',
-    }}
-    onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}>
-
-      {/* Top accent line */}
-      <div style={{...topLine, background:sv.g, opacity:running?1:hov?.7:.35}}/>
-
-      {/* Glow blob */}
-      <div style={{position:'absolute',inset:-80,borderRadius:'50%',
-        background:sv.glow,filter:'blur(100px)',opacity:running?.3:hov?.15:.05,
-        pointerEvents:'none',transition:'opacity .3s'}}/>
-
-      {/* Status */}
-      <div style={{...badge, background:running?`${sv.accent}18`:'rgba(255,255,255,.05)',
-        borderColor:running?`${sv.accent}40`:'rgba(255,255,255,.09)',
-        color:running?sv.accent:'rgba(255,255,255,.35)'}}>
-        <span style={{width:6,height:6,borderRadius:'50%',background:running?sv.accent:'rgba(255,255,255,.25)',
-          display:'inline-block',boxShadow:running?`0 0 8px ${sv.accent}`:'none',
-          animation:running?'blink 2s ease infinite':'none'}}/>
-        {running?'Активна':'Очікує'}
-      </div>
-
-      {/* Icon */}
-      <div style={iconWrap}>{sv.icon}</div>
-
-      {/* Text */}
-      <h3 style={title}>{sv.label}</h3>
-      <p style={desc}>{sv.desc}</p>
-
-      {/* Timer */}
-      {running && (
-        <div style={timer}>
-          <span>⏱</span>
-          <span style={{fontVariantNumeric:'tabular-nums',letterSpacing:'.5px'}}>{fmt(elapsed)}</span>
-        </div>
-      )}
-
-      {/* Buttons */}
-      <div style={btnRow}>
-        {running ? (
-          <>
-            <button style={{...btn,background:sv.g,border:'none',
-              boxShadow:`0 4px 20px ${sv.accent}40`,flex:1}}
-              onClick={onReconnect}>▶ Підключитись</button>
-            <button style={{...btn,background:'rgba(239,68,68,.12)',
-              borderColor:'rgba(239,68,68,.3)',color:'#f87171',width:42}}
-              onClick={onStop} title="Зупинити">⏹</button>
-          </>
-        ):(
-          <button style={{...btn, flex:1,
-            background:hov?`${sv.accent}20`:'rgba(255,255,255,.06)',
-            borderColor:hov?`${sv.accent}50`:'rgba(255,255,255,.1)',
-            cursor:loading?'wait':'pointer', opacity:loading?.7:1}}
-            onClick={onStart} disabled={loading}>
-            {loading
-              ?<><span style={spin}/>Запускаємо...</>
-              : <>🚀 Запустити</>}
-          </button>
-        )}
-      </div>
-
-      <style>{`
-        @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
-        @keyframes sp{to{transform:rotate(360deg)}}
-      `}</style>
-    </div>
-  );
-}
-
-const card={position:'relative',borderRadius:20,padding:'24px 22px 20px',
-  border:'1px solid',overflow:'hidden',display:'flex',flexDirection:'column',gap:10,
-  transition:'all .28s cubic-bezier(.4,0,.2,1)',backdropFilter:'blur(16px)',
-  fontFamily:"'Space Grotesk',sans-serif"};
-const topLine={position:'absolute',top:0,left:0,right:0,height:2,transition:'opacity .3s'};
-const badge={position:'relative',zIndex:1,alignSelf:'flex-start',display:'flex',
-  alignItems:'center',gap:6,fontSize:11,fontWeight:600,letterSpacing:'.8px',
-  textTransform:'uppercase',border:'1px solid',padding:'3px 10px',borderRadius:6,
-  fontFamily:"'Inter',sans-serif"};
-const iconWrap={position:'relative',zIndex:1,fontSize:44,lineHeight:1,marginTop:4};
-const title={position:'relative',zIndex:1,fontSize:21,fontWeight:700,
-  letterSpacing:'-.5px',color:'#fff',margin:0};
-const desc={position:'relative',zIndex:1,fontSize:13,color:'rgba(255,255,255,.45)',
-  lineHeight:1.6,margin:0,fontFamily:"'Inter',sans-serif",flexGrow:1};
-const timer={position:'relative',zIndex:1,display:'flex',alignItems:'center',gap:6,
-  fontSize:13,color:'rgba(255,255,255,.5)',fontFamily:"'Inter',sans-serif"};
-const btnRow={position:'relative',zIndex:1,display:'flex',gap:8,marginTop:4};
-const btn={display:'flex',alignItems:'center',justifyContent:'center',gap:7,
-  padding:'12px 16px',borderRadius:10,fontSize:13,fontWeight:600,
-  fontFamily:"'Space Grotesk',sans-serif",border:'1px solid',
-  color:'#fff',transition:'all .2s',cursor:'pointer'};
-const spin={display:'inline-block',width:13,height:13,
-  border:'2px solid rgba(255,255,255,.2)',borderTopColor:'#fff',
-  borderRadius:'50%',animation:'sp .7s linear infinite'};
-
-CPEOF007
-
-RUN cat > /app/frontend/src/components/SessionViewer.jsx << 'CPEOF008'
-import { useState, useCallback, useRef, useEffect } from 'react';
-
-const META = {
-  browser: { icon:'🌐', name:'Cloud Browser', sub:'Chrome', boot:20 },
-  desktop: { icon:'🖥️', name:'Cloud PC', sub:'Cinnamon Linux', boot:35 },
-  phone:   { icon:'📱', name:'Cloud Phone', sub:'Android UI', boot:15 },
-};
-
-export default function SessionViewer({ type, url, onBack }){
-  const [loaded, setLoaded]         = useState(false);
-  const [countdown, setCountdown]   = useState(META[type]?.boot||25);
-  const [retries, setRetries]       = useState(0);
-  const iframeRef = useRef(null);
-  const meta = META[type]||META.browser;
-
-  useEffect(()=>{
-    if(loaded) return;
-    const id=setInterval(()=>setCountdown(c=>c>0?c-1:0),1000);
-    return()=>clearInterval(id);
-  },[loaded]);
-
-  const handleLoad = useCallback(()=>setLoaded(true),[]);
-
-  const retry=()=>{
-    setLoaded(false);
-    setCountdown(META[type]?.boot||25);
-    setRetries(r=>r+1);
-    if(iframeRef.current){
-      const src=iframeRef.current.src;
-      iframeRef.current.src='';
-      setTimeout(()=>{ if(iframeRef.current) iframeRef.current.src=src; },400);
-    }
-  };
-
-  // Відкриваємо noVNC в новій вкладці — повний екран на телефоні
-  const openTab=()=>{
-    if(vncUrl) window.open(vncUrl,'_blank');
-  };
-
-  const fullscreen=()=>{
-    if(iframeRef.current?.requestFullscreen) iframeRef.current.requestFullscreen();
-    else openTab();
-  };
-
-  // resize=scale — десктоп підстроюється під розмір екрану
-  const vncUrl = url
-    ? `${url}&resize=scale&quality=7&compression=2&reconnect_delay=3000&bell=0`
-    : null;
-
-  return (
-    <div style={s.root}>
-      {/* Toolbar */}
-      <div style={s.bar}>
-        <button style={s.backBtn} onClick={onBack}>← Назад</button>
-        <div style={s.info}>
-          <span style={{fontSize:18}}>{meta.icon}</span>
-          <div>
-            <div style={s.name}>{meta.name}</div>
-            <div style={s.sub}>{meta.sub}</div>
-          </div>
-        </div>
-        <div style={{...s.dot_wrap, color:loaded?'#10b981':'#f59e0b'}}>
-          <span style={{...s.dot,background:loaded?'#10b981':'#f59e0b'}}/>
-          {loaded?'Активна':'Запуск...'}
-        </div>
-      </div>
-
-      {/* Action buttons */}
-      <div style={s.actions}>
-        <button style={s.actBtn} onClick={retry}>↺ Перепідключити</button>
-        <button style={{...s.actBtn,...s.actBtnPrimary}} onClick={openTab}>
-          ⛶ Відкрити на повний екран
-        </button>
-        <button style={s.actBtn} onClick={fullscreen}>📱 Fullscreen</button>
-      </div>
-
-      {/* Content */}
-      <div style={s.content}>
-        {!loaded&&(
-          <div style={s.overlay}>
-            <div style={s.card}>
-              <div style={{fontSize:52}}>{meta.icon}</div>
-              <div style={s.spinner}/>
-              <p style={s.lt}>Запускаємо {meta.name}...</p>
-              {countdown>0
-                ?<div style={s.cw}>
-                  <div style={s.cn}>{countdown}</div>
-                  <div style={s.cs}>секунд</div>
-                </div>
-                :<p style={s.cs}>Майже готово...</p>}
-              <div style={s.pb}>
-                <div style={{...s.pf,
-                  width:`${Math.max(5,100-(countdown/(meta.boot||25))*100)}%`}}/>
-              </div>
-              <p style={s.hint}>
-                💡 Для кращого досвіду натисни<br/>
-                <b>"Відкрити на повний екран"</b>
-              </p>
-              <button style={s.retryBtn} onClick={openTab}>
-                ⛶ Відкрити на повний екран
-              </button>
-            </div>
-          </div>
-        )}
-        {vncUrl&&(
-          <iframe ref={iframeRef} key={retries} src={vncUrl}
-            style={{...s.frame, opacity:loaded?1:0}}
-            onLoad={handleLoad}
-            allow="clipboard-read; clipboard-write; fullscreen"
-            title={meta.name}/>
-        )}
-      </div>
-      <style>{`
-        @keyframes sp{to{transform:rotate(360deg)}}
-      `}</style>
-    </div>
-  );
-}
-
-const s={
-  root:{display:'flex',flexDirection:'column',height:'100vh',background:'#030308',
-    fontFamily:"'Space Grotesk',sans-serif",color:'#fff'},
-  bar:{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',
-    background:'rgba(255,255,255,.04)',borderBottom:'1px solid rgba(255,255,255,.07)',
-    flexShrink:0},
-  backBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.1)',
-    color:'#fff',padding:'8px 14px',borderRadius:8,cursor:'pointer',fontSize:14,
-    fontFamily:"'Space Grotesk',sans-serif",flexShrink:0},
-  info:{flex:1,display:'flex',alignItems:'center',gap:8},
-  name:{fontSize:13,fontWeight:600},
-  sub:{fontSize:10,color:'rgba(255,255,255,.35)'},
-  dot_wrap:{display:'flex',alignItems:'center',gap:6,fontSize:11,flexShrink:0},
-  dot:{display:'inline-block',width:7,height:7,borderRadius:'50%'},
-  actions:{display:'flex',gap:8,padding:'8px 14px',
-    background:'rgba(255,255,255,.02)',borderBottom:'1px solid rgba(255,255,255,.06)',
-    flexShrink:0,flexWrap:'wrap'},
-  actBtn:{background:'rgba(255,255,255,.07)',border:'1px solid rgba(255,255,255,.12)',
-    color:'rgba(255,255,255,.8)',padding:'9px 14px',borderRadius:8,cursor:'pointer',
-    fontSize:13,fontWeight:500,fontFamily:"'Space Grotesk',sans-serif",whiteSpace:'nowrap'},
-  actBtnPrimary:{background:'rgba(79,70,229,.25)',borderColor:'rgba(79,70,229,.5)',
-    color:'#818cf8',fontWeight:700},
-  content:{flex:1,position:'relative',overflow:'hidden'},
-  overlay:{position:'absolute',inset:0,zIndex:10,background:'#030308',
-    display:'flex',alignItems:'center',justifyContent:'center',padding:16},
-  card:{display:'flex',flexDirection:'column',alignItems:'center',gap:14,
-    padding:'32px 24px',background:'rgba(255,255,255,.04)',
-    border:'1px solid rgba(255,255,255,.08)',borderRadius:20,
-    maxWidth:320,width:'100%',textAlign:'center'},
-  spinner:{width:40,height:40,border:'3px solid rgba(255,255,255,.08)',
-    borderTopColor:'#818cf8',borderRadius:'50%',animation:'sp .9s linear infinite'},
-  lt:{fontSize:16,fontWeight:600,color:'rgba(255,255,255,.85)'},
-  cw:{display:'flex',flexDirection:'column',alignItems:'center',gap:2},
-  cn:{fontSize:48,fontWeight:700,color:'#818cf8',lineHeight:1},
-  cs:{fontSize:12,color:'rgba(255,255,255,.3)'},
-  pb:{width:'100%',height:3,background:'rgba(255,255,255,.08)',borderRadius:2,overflow:'hidden'},
-  pf:{height:'100%',background:'linear-gradient(90deg,#4f46e5,#818cf8)',
-    borderRadius:2,transition:'width 1s linear'},
-  hint:{fontSize:12,color:'rgba(255,255,255,.35)',lineHeight:1.6},
-  retryBtn:{background:'rgba(79,70,229,.2)',border:'1px solid rgba(79,70,229,.4)',
-    color:'#818cf8',padding:'10px 20px',borderRadius:10,cursor:'pointer',
-    fontSize:14,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif",width:'100%'},
-  frame:{position:'absolute',inset:0,width:'100%',height:'100%',
-    border:'none',transition:'opacity .5s ease'},
-};
-
-CPEOF008
-
-RUN cat > /app/frontend/src/components/Toast.jsx << 'CPEOF009'
-import { useEffect, useState } from 'react';
-
-const COLORS = {
-  success: { bg:'rgba(16,185,129,.15)', border:'rgba(16,185,129,.35)', icon:'✅' },
-  error:   { bg:'rgba(239,68,68,.15)',  border:'rgba(239,68,68,.35)',  icon:'❌' },
-  info:    { bg:'rgba(99,102,241,.15)', border:'rgba(99,102,241,.35)', icon:'ℹ️' },
-};
-
-function ToastItem({ toast }) {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
-  const c = COLORS[toast.type] || COLORS.info;
-  return (
-    <div style={{
-      ...s.toast,
-      background: c.bg,
-      borderColor: c.border,
-      opacity: visible ? 1 : 0,
-      transform: visible ? 'none' : 'translateX(40px)',
-    }}>
-      <span>{c.icon}</span>
-      <span style={s.msg}>{toast.msg}</span>
-    </div>
-  );
-}
-
-export default function Toast({ toasts }) {
-  return (
-    <div style={s.wrap}>
-      {toasts.map(t => <ToastItem key={t.id} toast={t} />)}
-      <style>{`@keyframes fadeOut{to{opacity:0}}`}</style>
-    </div>
-  );
-}
-
-const s = {
-  wrap: { position:'fixed', top:20, right:20, zIndex:9999,
-    display:'flex', flexDirection:'column', gap:10 },
-  toast: { display:'flex', alignItems:'center', gap:10,
-    padding:'12px 18px', borderRadius:12,
-    border:'1px solid', backdropFilter:'blur(12px)',
-    color:'#fff', fontSize:14, fontFamily:"'Space Grotesk',sans-serif",
-    boxShadow:'0 8px 32px rgba(0,0,0,.3)', minWidth:240,
-    transition:'all .3s ease' },
-  msg: { flex:1 },
-};
-
-CPEOF009
-
-RUN cat > /app/frontend/src/components/StatsBar.jsx << 'CPEOF010'
-import { useState, useEffect } from 'react';
-
-export default function StatsBar() {
-  const [stats, setStats] = useState(null);
-
-  useEffect(() => {
-    const fetch_ = async () => {
-      try {
-        const r = await fetch('/api/stats', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cp_token')}` }
-        });
-        setStats(await r.json());
-      } catch {}
-    };
-    fetch_();
-    const id = setInterval(fetch_, 4000);
-    return () => clearInterval(id);
-  }, []);
-
-  const activeSessions = stats
-    ? Object.values(stats.sessions || {}).filter(s => s.running).length
-    : 0;
-  const ramPct = stats?.memory
-    ? Math.round((stats.memory.used / stats.memory.total) * 100)
-    : null;
-
-  return (
-    <div style={s.bar}>
-      <Chip icon="🖥️" label={`${activeSessions} активних`} glow={activeSessions > 0 ? '#10b981' : null} />
-      {ramPct !== null && (
-        <Chip
-          icon="💾"
-          label={`RAM ${ramPct}%`}
-          glow={ramPct > 80 ? '#ef4444' : ramPct > 60 ? '#f59e0b' : null}
-        />
-      )}
-      {stats?.uptime && <Chip icon="⏱️" label={fmtUptime(stats.uptime)} />}
-    </div>
-  );
-}
-
-function Chip({ icon, label, glow }) {
-  return (
-    <div style={{
-      ...s.chip,
-      borderColor: glow ? `${glow}50` : 'rgba(255,255,255,0.1)',
-      background: glow ? `${glow}15` : 'rgba(255,255,255,0.05)',
-    }}>
-      <span>{icon}</span>
-      <span style={s.chipLabel}>{label}</span>
-      {glow && <span style={{ ...s.dot, background: glow, boxShadow: `0 0 6px ${glow}` }} />}
-    </div>
-  );
-}
-
-function fmtUptime(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return h > 0 ? `${h}г ${m}хв` : `${m}хв`;
-}
-
-const s = {
-  bar: { display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' },
-  chip: {
-    display:'flex', alignItems:'center', gap:6,
-    padding:'5px 12px', borderRadius:20,
-    border:'1px solid', fontSize:12,
-    fontFamily:"'Inter',sans-serif", color:'rgba(255,255,255,0.65)',
-    transition:'all .3s',
-  },
-  chipLabel: { letterSpacing:'0.2px' },
-  dot: { width:6, height:6, borderRadius:'50%', display:'inline-block' },
-};
-
-CPEOF010
-
-RUN cat > /app/backend/package.json << 'CPEOF011'
-{
-  "name": "cloudplay-backend",
-  "version": "1.4.0",
-  "type": "commonjs",
-  "scripts": { "start": "node server.js" },
-  "dependencies": {
-    "express": "^4.18.2",
-    "http-proxy": "^1.18.1",
-    "uuid": "^9.0.0"
-  }
-}
-
-CPEOF011
-
-RUN cat > /app/backend/sessionManager.js << 'CPEOF012'
-const { spawn, execSync, spawnSync } = require('child_process');
-const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
-
-const CONFIGS = {
-  browser: { display:':1', vncPort:5901, wsPort:6901, geo:'1920x1080' },
-  desktop: { display:':2', vncPort:5902, wsPort:6902, geo:'1600x900'  },
-  phone:   { display:':3', vncPort:5903, wsPort:6903, geo:'412x915'   },
-};
-const sessions = {};
-
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-
-function sp(cmd, args, env = {}){
-  const p = spawn(cmd, args, {
-    env: { ...process.env, ...env },
-    stdio: 'ignore', detached: false,
-  });
-  p.on('error', e => console.error('[' + cmd + ']:', e.message));
-  return p;
-}
-
-async function waitPort(port, tries = 50){
-  for(let i = 0; i < tries; i++){
-    try{
-      execSync("bash -c 'echo > /dev/tcp/127.0.0.1/" + port + "'", { timeout:500, stdio:'ignore' });
-      return true;
-    }catch{}
-    await sleep(300);
-  }
-  return false;
-}
-
-async function waitDisplay(d, tries = 40){
-  for(let i = 0; i < tries; i++){
-    if(spawnSync('xdpyinfo', ['-display', d], { timeout:1000, stdio:'ignore' }).status === 0)
-      return true;
-    await sleep(300);
-  }
-  return false;
-}
-
-function createDesktopShortcuts(){
-  const dir = '/root/Desktop';
-  fs.mkdirSync(dir, { recursive: true });
-  const apps = [
-    { name:'Chrome',       exec:'/usr/local/bin/chrome %U',   icon:'google-chrome'         },
-    { name:'Steam',        exec:'/usr/games/steam %U',         icon:'steam'                 },
-    { name:'qBittorrent',  exec:'qbittorrent',                 icon:'qbittorrent'           },
-    { name:'Files',        exec:'nemo',                        icon:'system-file-manager'   },
-    { name:'Terminal',     exec:'xfce4-terminal',              icon:'utilities-terminal'    },
-    { name:'GIMP',         exec:'gimp',                        icon:'gimp'                  },
-    { name:'VLC',          exec:'vlc',                         icon:'vlc'                   },
-    { name:'Telegram',     exec:'telegram-desktop',            icon:'telegram'              },
-    { name:'LibreOffice',  exec:'libreoffice',                 icon:'libreoffice-startcenter'},
-    { name:'Audacity',     exec:'audacity',                    icon:'audacity'              },
-    { name:'Lutris',       exec:'lutris',                      icon:'lutris'                },
-    { name:'Wine Config',  exec:'winecfg',                     icon:'wine'                  },
-    { name:'Synaptic',     exec:'synaptic',                    icon:'synaptic'              },
-    { name:'Software',     exec:'gnome-software',              icon:'gnome-software'        },
-    { name:'KeePassXC',    exec:'keepassxc',                   icon:'keepassxc'             },
-    { name:'Screenshot',   exec:'flameshot gui',               icon:'flameshot'             },
-    { name:'Monitor',      exec:'xfce4-terminal -e btop',      icon:'utilities-system-monitor'},
-    { name:'Inkscape',     exec:'inkscape',                    icon:'inkscape'              },
-    { name:'FileZilla',    exec:'filezilla',                   icon:'filezilla'             },
-    { name:'Remmina',      exec:'remmina',                     icon:'remmina'               },
-    { name:'Discord',       exec:'/opt/discord/Discord',          icon:'discord'               },
-    { name:'Heroic',        exec:'heroic',                        icon:'heroic'                },
-    { name:'RetroArch',     exec:'retroarch',                     icon:'retroarch'             },
-    { name:'Krita',         exec:'krita',                         icon:'krita'                 },
-    { name:'Shotcut',       exec:'shotcut',                       icon:'shotcut'               },
-    { name:'Kdenlive',      exec:'kdenlive',                      icon:'kdenlive'              },
-    { name:'Thunderbird',   exec:'thunderbird',                   icon:'thunderbird'           },
-    { name:'VS Code',       exec:'code --no-sandbox',              icon:'code'                  },
-    { name:'Blender',       exec:'blender',                        icon:'blender'               },
-    { name:'Tilix',         exec:'tilix',                          icon:'tilix'                 },
-    { name:'GParted',       exec:'gparted',                        icon:'gparted'               },
-    { name:'Cheese',        exec:'cheese',                         icon:'cheese'                },
-    { name:'Calculator',    exec:'gnome-calculator',               icon:'gnome-calculator'      },
-    { name:'Timeshift',     exec:'timeshift-gtk',                  icon:'timeshift'             },
-    { name:'BleachBit',     exec:'bleachbit',                      icon:'bleachbit'             },
-    { name:'ClamTK',        exec:'clamtk',                         icon:'clamtk'                },
-    { name:'Xournal++',     exec:'xournalpp',                      icon:'xournalpp'             },
-    { name:'Calibre',       exec:'calibre',                        icon:'calibre-gui'           },
-    { name:'HandBrake',     exec:'ghb',                            icon:'handbrake'             },
-    { name:'Neofetch',      exec:'xfce4-terminal -e neofetch',     icon:'utilities-terminal'    },
-    { name:'Wireshark',     exec:'wireshark',                      icon:'wireshark'             },
-    { name:'nmap',          exec:'xfce4-terminal -e nmap',         icon:'utilities-terminal'    },
-    { name:'Disk Usage',    exec:'baobab',                         icon:'baobab'                },
-    { name:'Text Editor',   exec:'gedit',                          icon:'gedit'                 },
-    { name:'Font Manager',  exec:'font-manager',                   icon:'font-manager'          },
-    { name:'Webcam',        exec:'cheese',                         icon:'cheese'                },
-    { name:'Wireshark',     exec:'wireshark',                     icon:'wireshark'             },
-    { name:'VirtualBox',    exec:'virtualbox',                    icon:'virtualbox'            },
-  ];
-  apps.forEach(a => {
-    const f = dir + '/' + a.name.replace(/\s/g,'') + '.desktop';
-    fs.writeFileSync(f,
-      '[Desktop Entry]\nType=Application\nName=' + a.name +
-      '\nExec=' + a.exec + '\nIcon=' + a.icon + '\nTerminal=false\n');
-    try{ fs.chmodSync(f, '755'); }catch{}
-  });
-}
-
-function setupTheme(){
-  const xc = '/root/.config/xfce4/xfconf/xfce-perchannel-xml';
-  fs.mkdirSync(xc, { recursive: true });
-  fs.mkdirSync('/root/.config/autostart', { recursive: true });
-
-  fs.writeFileSync(xc + '/xsettings.xml',
-    '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    '<channel name="xsettings" version="1.0">\n' +
-    '  <property name="Net" type="empty">\n' +
-    '    <property name="ThemeName" type="string" value="Arc-Dark"/>\n' +
-    '    <property name="IconThemeName" type="string" value="Papirus-Dark"/>\n' +
-    '  </property>\n' +
-    '  <property name="Gtk" type="empty">\n' +
-    '    <property name="FontName" type="string" value="Sans 11"/>\n' +
-    '  </property>\n' +
-    '</channel>');
-
-  fs.writeFileSync(xc + '/xfwm4.xml',
-    '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    '<channel name="xfwm4" version="1.0">\n' +
-    '  <property name="general" type="empty">\n' +
-    '    <property name="theme" type="string" value="Arc-Dark"/>\n' +
-    '    <property name="button_layout" type="string" value="|HMC"/>\n' +
-    '    <property name="use_compositing" type="bool" value="false"/>\n' +
-    '  </property>\n' +
-    '</channel>');
-
-  // Chrome wrapper
-  fs.writeFileSync('/usr/local/bin/chrome',
-    '#!/bin/bash\nexec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"\n');
-  try{ fs.chmodSync('/usr/local/bin/chrome', '755'); }catch{}
-
-  // Autostart: Trust desktop files + Nemo setting
-  fs.writeFileSync('/root/.config/autostart/trust-desktop.desktop',
-    '[Desktop Entry]
-Type=Application
-Name=TrustDesktop
-' +
-    'Exec=bash -c 'gsettings set org.nemo.preferences executable-text-activation launch 2>/dev/null; ' +
-    'sleep 2; for f in /root/Desktop/*.desktop; do gio set \ metadata::trusted true 2>/dev/null; done'
-' +
-    'Terminal=false
-X-GNOME-Autostart-enabled=true
-');
-
-  // Autostart Chrome
-  fs.writeFileSync('/root/.config/autostart/chrome.desktop',
-    '[Desktop Entry]\nType=Application\nName=Chrome\n' +
-    'Exec=/usr/local/bin/chrome https://www.google.com\nTerminal=false\n');
-
-  // Autostart Plank dock
-  fs.writeFileSync('/root/.config/autostart/plank.desktop',
-    '[Desktop Entry]\nType=Application\nName=Plank\nExec=plank\nTerminal=false\n');
-}
-
-async function startSession(type){
-  if(sessions[type]) await stopSession(type);
-  const cfg = CONFIGS[type];
-  const procs = {};
-  console.log('Starting [' + type + ']...');
-
-  fs.mkdirSync('/root/.vnc', { recursive: true });
-
-  procs.vnc = sp('Xvnc', [
-    cfg.display,
-    '-geometry', cfg.geo,
-    '-depth', '24',
-    '-SecurityTypes', 'None',
-    '-localhost', 'no',
-    '-rfbport', String(cfg.vncPort),
-    '-dpi', '96',
-    '-AcceptSetDesktopSize',
-  ], { HOME: '/root' });
-
-  await waitDisplay(cfg.display);
-  await waitPort(cfg.vncPort);
-  await sleep(300);
-
-  sp('xsetroot', ['-solid', '#0d1117', '-display', cfg.display]);
-
-  if(type === 'browser'){
-    setupTheme();
-    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'],
-      { DISPLAY: cfg.display, HOME: '/root' });
-    await sleep(700);
-    procs.app = sp('/usr/local/bin/chrome',
-      ['--start-maximized', 'https://www.google.com'],
-      { DISPLAY: cfg.display, HOME: '/root' });
-
-  } else if(type === 'desktop'){
-    fs.mkdirSync('/tmp/xdg', { recursive: true });
-    createDesktopShortcuts();
-    setupTheme();
-
-    procs.wm = sp('bash', ['-c',
-      'export DISPLAY=' + cfg.display + ' HOME=/root XDG_RUNTIME_DIR=/tmp/xdg ' +
-      'XDG_SESSION_TYPE=x11 XDG_SESSION_DESKTOP=cinnamon XDG_CURRENT_DESKTOP=X-Cinnamon ' +
-      'XKL_XMODMAP_DISABLE=1 DBUS_SESSION_BUS_ADDRESS=autolaunch: && ' +
-      'dbus-run-session -- cinnamon-session 2>/tmp/cinnamon.log || startxfce4 2>/tmp/xfce.log'
-    ], { DISPLAY: cfg.display, HOME: '/root', XDG_RUNTIME_DIR: '/tmp/xdg' });
-
-  } else {
-    procs.wm = sp('openbox', ['--config-file', '/app/ob-rc.xml'],
-      { DISPLAY: cfg.display, HOME: '/root' });
-    await sleep(700);
-    procs.app = sp('/usr/local/bin/chrome',
-      ['--app=file:///app/backend/android.html', '--window-size=412,915', '--window-position=0,0'],
-      { DISPLAY: cfg.display, HOME: '/root' });
-  }
-
-  await sleep(type === 'desktop' ? 7000 : 5000);
-
-  procs.ws = sp('websockify', [String(cfg.wsPort), 'localhost:' + cfg.vncPort]);
-  await waitPort(cfg.wsPort);
-
-  sessions[type] = { id: uuidv4(), type, procs, startTime: new Date() };
-  console.log('[' + type + '] ready');
-  return sessions[type];
-}
-
-async function stopSession(type){
-  const s = sessions[type];
-  if(!s) return;
-  for(const p of Object.values(s.procs).reverse())
-    try{ if(p && !p.killed) p.kill('SIGTERM'); }catch{}
-  delete sessions[type];
-  await sleep(500);
-}
-
-function getAllStatus(){
-  const o = { browser:{running:false}, desktop:{running:false}, phone:{running:false} };
-  for(const [t, s] of Object.entries(sessions))
-    o[t] = s ? { running:true, id:s.id, startTime:s.startTime } : { running:false };
-  return o;
-}
-
-module.exports = { startSession, stopSession, getAllStatus };
-
-CPEOF012
-
-RUN cat > /app/backend/server.js << 'CPEOF013'
-const express   = require('express');
-const http      = require('http');
-const httpProxy = require('http-proxy');
-const path      = require('path');
-const crypto    = require('crypto');
-const fs        = require('fs');
-
-const app    = express();
-const server = http.createServer(app);
-const proxy  = httpProxy.createProxyServer({ ws:true, changeOrigin:true });
-proxy.on('error', (e, req, res) => {
-  console.error('[proxy]', e.message);
-  if (res?.writeHead) { res.writeHead(502); res.end('VNC not ready'); }
-});
-
-app.use(express.json());
-
-// Статика
-const DIST  = path.join(__dirname, '../frontend/dist');
-const NOVNC = '/opt/novnc';
-app.use(express.static(DIST));
-app.use('/novnc', express.static(NOVNC));
-
-// Auth
-const TOKENS   = new Set();
-const PASSWORD = process.env.CLOUDPLAY_PASSWORD || 'cloudplay';
-
-app.post('/api/auth/login', (req, res) => {
-  if (!req.body || req.body.password !== PASSWORD)
-    return res.status(401).json({ success:false, error:'Невірний пароль' });
-  const token = crypto.randomUUID();
-  TOKENS.add(token);
-  setTimeout(() => TOKENS.delete(token), 86400000);
-  res.json({ success:true, token });
-});
-
-function auth(req, res, next) {
-  const h = req.headers.authorization;
-  if (!h?.startsWith('Bearer ') || !TOKENS.has(h.split(' ')[1]))
-    return res.status(401).json({ error:'Unauthorized' });
-  next();
-}
-
-// Session manager
-let sm = null;
-function getSM() {
-  if (!sm) try { sm = require('./sessionManager'); } catch(e) { console.error('[SM]', e.message); }
-  return sm;
-}
-
-app.post('/api/sessions/start/:type', auth, async (req, res) => {
-  const mgr = getSM();
-  if (!mgr) return res.status(503).json({ success:false, error:'SM unavailable' });
-  const { type } = req.params;
-  if (!['browser','desktop','phone'].includes(type))
-    return res.status(400).json({ success:false, error:'Bad type' });
-  try {
-    await mgr.startSession(type);
-    res.json({ success:true,
-      vncUrl:`/novnc/vnc.html?path=websockify/${type}&autoconnect=true&reconnect=true` });
-  } catch(e) { res.status(500).json({ success:false, error:e.message }); }
-});
-
-app.post('/api/sessions/stop/:type', auth, async (req, res) => {
-  const mgr = getSM();
-  if (mgr) await mgr.stopSession(req.params.type).catch(()=>{});
-  res.json({ success:true });
-});
-
-app.get('/api/sessions/status', auth, (req, res) => {
-  const mgr = getSM();
-  res.json(mgr ? mgr.getAllStatus() : {browser:{running:false},desktop:{running:false},phone:{running:false}});
-});
-
-app.get('/api/stats', auth, (req, res) => {
-  try {
-    const mem   = fs.readFileSync('/proc/meminfo','utf8');
-    const total = parseInt(mem.match(/MemTotal:\s+(\d+)/)?.[1]||'0')/1024;
-    const avail = parseInt(mem.match(/MemAvailable:\s+(\d+)/)?.[1]||'0')/1024;
-    res.json({ memory:{total:Math.round(total),used:Math.round(total-avail)},
-      uptime:Math.floor(process.uptime()), sessions:getSM()?.getAllStatus()||{} });
-  } catch { res.json({memory:{total:0,used:0},uptime:0,sessions:{}}); }
-});
-
-app.get('/api/health', (req, res) => res.json({ status:'ok', version:'1.4' }));
-
-// SPA fallback
-app.get('*', (req, res) => res.sendFile(path.join(DIST, 'index.html')));
-
-// WebSocket proxy → websockify
-const WS_PORTS = { browser:6901, desktop:6902, phone:6903 };
-
-server.on('upgrade', (req, socket, head) => {
-  const m = req.url.match(/^\/websockify\/(\w+)/);
-  if (!m) { socket.destroy(); return; }
-  const port = WS_PORTS[m[1]];
-  if (!port) { socket.destroy(); return; }
-  console.log(`[WS] proxying ${m[1]} → :${port}`);
-  proxy.ws(req, socket, head, { target:`ws://127.0.0.1:${port}` });
-});
-
-const PORT = parseInt(process.env.PORT || '8080');
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ CloudPlay v1.4 :${PORT}`);
-  getSM();
-});
-
-CPEOF013
-
-RUN cat > /app/backend/android.html << 'CPEOF014'
-<!DOCTYPE html>
-<html lang="uk">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=412,initial-scale=1">
-<title>CloudPlay Phone</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{width:412px;height:915px;overflow:hidden;font-family:'Segoe UI',Roboto,sans-serif;background:#000;user-select:none}
-
-/* WALLPAPER */
-.wp{position:absolute;inset:0;background:linear-gradient(160deg,#0a0a1e 0%,#1a0533 40%,#0d1f3c 100%)}
-.wp::after{content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse at 30% 60%,rgba(99,102,241,.25) 0%,transparent 60%),
-             radial-gradient(ellipse at 80% 20%,rgba(139,92,246,.2) 0%,transparent 50%)}
-
-/* STATUS BAR */
-.sb{position:absolute;top:0;left:0;right:0;height:28px;z-index:100;
-  padding:0 16px;display:flex;align-items:center;justify-content:space-between}
-.sb-time{font-size:13px;font-weight:700;color:#fff}
-.sb-icons{display:flex;gap:5px;align-items:center;font-size:12px;color:#fff}
-
-/* DATE WIDGET */
-.date-widget{position:absolute;top:38px;left:0;right:0;text-align:center;z-index:10}
-.date-time{font-size:52px;font-weight:200;color:#fff;letter-spacing:-2px;line-height:1}
-.date-sub{font-size:14px;color:rgba(255,255,255,.6);margin-top:4px;font-weight:400}
-
-/* NOTIFICATION PILL */
-.notif{position:absolute;top:140px;left:20px;right:20px;z-index:10;
-  background:rgba(255,255,255,.1);backdrop-filter:blur(20px);
-  border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:12px 16px;
-  display:flex;align-items:center;gap:12px;cursor:pointer}
-.notif-icon{font-size:20px}
-.notif-text{flex:1}
-.notif-app{font-size:11px;color:rgba(255,255,255,.5);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.notif-msg{font-size:13px;color:#fff;margin-top:2px}
-.notif-time{font-size:11px;color:rgba(255,255,255,.4)}
-
-/* APP GRID */
-.apps{position:absolute;top:220px;left:0;right:0;padding:0 16px;
-  display:grid;grid-template-columns:repeat(4,1fr);gap:16px 8px;z-index:10}
-.app{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;padding:6px 4px;border-radius:16px;transition:background .15s}
-.app:active{background:rgba(255,255,255,.1)}
-.app-i{width:58px;height:58px;border-radius:16px;display:flex;align-items:center;justify-content:center;
-  font-size:28px;box-shadow:0 4px 20px rgba(0,0,0,.4);flex-shrink:0}
-.app-l{font-size:11px;color:rgba(255,255,255,.9);text-shadow:0 1px 6px rgba(0,0,0,.8);font-weight:500;text-align:center}
-
-/* DOCK */
-.dock{position:absolute;bottom:28px;left:16px;right:16px;z-index:10;
-  background:rgba(255,255,255,.12);backdrop-filter:blur(30px);
-  border:1px solid rgba(255,255,255,.15);border-radius:28px;
-  padding:10px 20px;display:flex;justify-content:space-around;align-items:center}
-
-/* GESTURE BAR */
-.gesture{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
-  width:100px;height:4px;background:rgba(255,255,255,.35);border-radius:2px;z-index:200}
-
-/* BROWSER */
-.browser{position:absolute;inset:0;z-index:300;display:none;flex-direction:column;background:#1a1a2e}
-.browser.on{display:flex}
-.brow-bar{background:#111827;padding:8px 10px;display:flex;align-items:center;gap:8px;flex-shrink:0;
-  border-bottom:1px solid rgba(255,255,255,.08)}
-.brow-btn{background:none;border:none;color:#9ca3af;font-size:18px;cursor:pointer;padding:4px 6px;
-  border-radius:6px;display:flex;align-items:center;justify-content:center}
-.brow-btn:active{background:rgba(255,255,255,.1)}
-.brow-url{flex:1;padding:8px 14px;border-radius:20px;background:rgba(255,255,255,.08);
-  color:#fff;border:1px solid rgba(255,255,255,.12);font-size:13px;outline:none;font-family:inherit}
-.brow-tabs{display:flex;background:#111827;border-bottom:1px solid rgba(255,255,255,.06);overflow-x:auto;flex-shrink:0}
-.tab{padding:8px 14px;font-size:12px;color:rgba(255,255,255,.5);white-space:nowrap;cursor:pointer;
-  border-bottom:2px solid transparent;display:flex;align-items:center;gap:6px}
-.tab.active{color:#818cf8;border-bottom-color:#818cf8;background:rgba(129,140,248,.1)}
-.tab-close{font-size:14px;color:rgba(255,255,255,.3);margin-left:4px}
-.brow-frame{flex:1;border:none;background:#fff}
-.brow-navbar{background:#111827;padding:8px 20px;display:flex;justify-content:space-around;
-  border-top:1px solid rgba(255,255,255,.06);flex-shrink:0}
-
-@keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:none;opacity:1}}
-.browser.on{animation:slideUp .25s ease}
-</style>
-</head>
-<body>
-<div class="wp"></div>
-
-<div class="sb">
-  <span class="sb-time" id="st">00:00</span>
-  <div class="sb-icons">
-    <span>▲▲▲</span>
-    <span>🔋</span>
-  </div>
-</div>
-
-<div class="date-widget">
-  <div class="date-time" id="dt">00:00</div>
-  <div class="date-sub" id="ds">Субота, 14 червня</div>
-</div>
-
-<div class="notif" onclick="openApp('https://web.telegram.org')">
-  <div class="notif-icon">✈️</div>
-  <div class="notif-text">
-    <div class="notif-app">Telegram</div>
-    <div class="notif-msg">CloudPlay запущено! 🚀</div>
-  </div>
-  <div class="notif-time">зараз</div>
-</div>
-
-<div class="apps" id="apps">
-  <div class="app" onclick="openApp('https://www.google.com')">
-    <div class="app-i" style="background:#fff">🌐</div><div class="app-l">Chrome</div></div>
-  <div class="app" onclick="openApp('https://m.youtube.com')">
-    <div class="app-i" style="background:#ff0000">▶️</div><div class="app-l">YouTube</div></div>
-  <div class="app" onclick="openApp('https://web.telegram.org')">
-    <div class="app-i" style="background:#2196F3">✈️</div><div class="app-l">Telegram</div></div>
-  <div class="app" onclick="openApp('https://discord.com/app')">
-    <div class="app-i" style="background:#5865F2">💬</div><div class="app-l">Discord</div></div>
-  <div class="app" onclick="openApp('https://m.instagram.com')">
-    <div class="app-i" style="background:linear-gradient(135deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)">📸</div><div class="app-l">Instagram</div></div>
-  <div class="app" onclick="openApp('https://www.tiktok.com')">
-    <div class="app-i" style="background:#010101">🎵</div><div class="app-l">TikTok</div></div>
-  <div class="app" onclick="openApp('https://maps.google.com')">
-    <div class="app-i" style="background:#4CAF50">🗺️</div><div class="app-l">Maps</div></div>
-  <div class="app" onclick="openApp('https://gmail.com')">
-    <div class="app-i" style="background:#EA4335">📧</div><div class="app-l">Gmail</div></div>
-  <div class="app" onclick="openApp('https://open.spotify.com')">
-    <div class="app-i" style="background:#1DB954">🎧</div><div class="app-l">Spotify</div></div>
-  <div class="app" onclick="openApp('https://www.netflix.com')">
-    <div class="app-i" style="background:#E50914">🎬</div><div class="app-l">Netflix</div></div>
-  <div class="app" onclick="openApp('https://twitter.com')">
-    <div class="app-i" style="background:#000">✕</div><div class="app-l">X</div></div>
-  <div class="app" onclick="openApp('https://reddit.com')">
-    <div class="app-i" style="background:#FF4500">🤖</div><div class="app-l">Reddit</div></div>
-</div>
-
-<div class="dock">
-  <div class="app" onclick="openApp('https://www.google.com')" style="margin:0">
-    <div class="app-i" style="background:#fff;width:52px;height:52px">🌐</div></div>
-  <div class="app" onclick="openApp('https://m.youtube.com')" style="margin:0">
-    <div class="app-i" style="background:#ff0000;width:52px;height:52px">▶️</div></div>
-  <div class="app" onclick="openApp('https://web.telegram.org')" style="margin:0">
-    <div class="app-i" style="background:#2196F3;width:52px;height:52px">✈️</div></div>
-  <div class="app" onclick="openApp('https://gmail.com')" style="margin:0">
-    <div class="app-i" style="background:#EA4335;width:52px;height:52px">📧</div></div>
-</div>
-
-<div class="gesture"></div>
-
-<!-- BROWSER -->
-<div class="browser" id="br">
-  <div class="brow-bar">
-    <button class="brow-btn" onclick="closeBr()">✕</button>
-    <input class="brow-url" id="url" type="text" placeholder="Пошук або адреса..."
-      onkeydown="if(event.key==='Enter')go(this.value)">
-    <button class="brow-btn" onclick="go(document.getElementById('url').value)">→</button>
-  </div>
-  <div class="brow-tabs" id="tabs"></div>
-  <iframe class="brow-frame" id="frm" allow="*" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation"></iframe>
-  <div class="brow-navbar">
-    <button class="brow-btn" onclick="document.getElementById('frm').contentWindow.history.back()">←</button>
-    <button class="brow-btn" onclick="document.getElementById('frm').contentWindow.history.forward()">→</button>
-    <button class="brow-btn" onclick="document.getElementById('frm').src=document.getElementById('frm').src">↺</button>
-    <button class="brow-btn" onclick="closeBr()">⌂</button>
-  </div>
-</div>
-
-<script>
-function clock(){
-  const n=new Date();
-  const h=n.getHours().toString().padStart(2,'0');
-  const m=n.getMinutes().toString().padStart(2,'0');
-  document.getElementById('st').textContent=h+':'+m;
-  document.getElementById('dt').textContent=h+':'+m;
-  const days=['Неділя','Понеділок','Вівторок','Середа','Четвер',"П'ятниця",'Субота'];
-  const months=['січня','лютого','березня','квітня','травня','червня','липня','серпня','вересня','жовтня','листопада','грудня'];
-  document.getElementById('ds').textContent=days[n.getDay()]+', '+n.getDate()+' '+months[n.getMonth()];
-}
-clock(); setInterval(clock,1000);
-
-function openApp(url){
-  document.getElementById('url').value=url;
-  document.getElementById('frm').src=url;
-  document.getElementById('br').classList.add('on');
-}
-function closeBr(){
-  document.getElementById('br').classList.remove('on');
-  document.getElementById('frm').src='';
-}
-function go(v){
-  if(!v)return;
-  if(!v.startsWith('http'))v='https://'+v;
-  document.getElementById('url').value=v;
-  document.getElementById('frm').src=v;
-}
-</script>
-</body>
-</html>
-
-CPEOF014
-
-RUN cat > /app/supervisord.conf << 'CPEOF015'
-[supervisord]
-nodaemon=true
-logfile=/var/log/supervisor/supervisord.log
-pidfile=/var/run/supervisord.pid
-loglevel=info
-user=root
-
-[program:backend]
-command=node /app/backend/server.js
-directory=/app/backend
-autostart=true
-autorestart=true
-startretries=10
-priority=10
-environment=NODE_ENV="production",CLOUDPLAY_PASSWORD="%(ENV_CLOUDPLAY_PASSWORD)s"
-stdout_logfile=/var/log/supervisor/backend.log
-stderr_logfile=/var/log/supervisor/backend.err.log
-
-CPEOF015
-
-RUN cat > /app/ob-rc.xml << 'CPEOF016'
-<?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc">
-  <theme><name>Arc-Dark</name>
-    <font place="ActiveWindow"><name>Sans</name><size>10</size><weight>Bold</weight></font>
-  </theme>
-  <desktops><number>1</number><names><name>CloudPlay</name></names></desktops>
-  <focus><followMouse>no</followMouse><focusLast>yes</focusLast></focus>
-  <placement><policy>Smart</policy></placement>
-  <keyboard>
-    <keybind key="A-F4"><action name="Close"/></keybind>
-    <keybind key="super-d"><action name="ToggleShowDesktop"/></keybind>
-  </keyboard>
-  <mouse>
-    <context name="Desktop">
-      <mousebind button="Right" action="Press">
-        <action name="ShowMenu"><menu>root-menu</menu></action>
-      </mousebind>
-    </context>
-    <context name="Client">
-      <mousebind button="A-Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
-      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
-      <mousebind button="A-Right" action="Drag"><action name="Resize"/></mousebind>
-    </context>
-    <context name="Titlebar">
-      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
-      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
-    </context>
-  </mouse>
-</openbox_config>
-
-CPEOF016
-
-RUN cat > /app/ob-menu.xml << 'CPEOF017'
-<?xml version="1.0" encoding="UTF-8"?>
-<openbox_menu>
-  <menu id="root-menu" label="CloudPlay PC">
-    <item label="🌐  Firefox Browser">
-      <action name="Execute"><execute>/opt/firefox/firefox --new-window https://www.google.com</execute></action>
-    </item>
-    <item label="📁  Files (Thunar)">
-      <action name="Execute"><execute>thunar /root</execute></action>
-    </item>
-    <item label="🖥️  Terminal">
-      <action name="Execute"><execute>xterm -bg '#0d1117' -fg '#e6edf3' -fa 'Monospace' -fs 13 -title Terminal</execute></action>
-    </item>
-    <separator/>
-    <item label="📝  Text Editor">
-      <action name="Execute"><execute>mousepad</execute></action>
-    </item>
-    <item label="🖥️  System Monitor">
-      <action name="Execute"><execute>xterm -e 'htop'</execute></action>
-    </item>
-    <separator/>
-    <item label="🔄  Restart Desktop">
-      <action name="Restart"/>
-    </item>
-  </menu>
-</openbox_menu>
-
-CPEOF017
-
-RUN cat > /app/tint2rc << 'CPEOF018'
-# CloudPlay tint2 config
-rounded = 0
-border_width = 0
-background_color = #0d1117 100
-border_color = #30363d 100
-
-panel_monitor = all
-panel_position = bottom center horizontal
-panel_size = 100% 44
-panel_margin = 0 0
-panel_padding = 4 0 4
-panel_dock = 0
-wm_menu = 0
-panel_layer = top
-panel_background_id = 1
-panel_items = LTSC
-
-# Taskbar
-taskbar_mode = single_desktop
-taskbar_padding = 2 2 2
-taskbar_background_id = 0
-taskbar_active_background_id = 2
-
-task_icon = 1
-task_text = 1
-task_maximum_size = 220 36
-task_centered = 1
-task_padding = 4 4 4
-task_font = Sans 10
-task_font_color = #c9d1d9 100
-task_active_font_color = #ffffff 100
-task_background_id = 3
-task_active_background_id = 4
-
-# Launcher
-launcher_padding = 6 4 6
-launcher_background_id = 0
-launcher_icon_theme =
-launcher_item_app = /app/firefox.desktop
-
-# Systray
-systray_padding = 4 4 4
-systray_sort = ascending
-systray_icon_size = 22
-systray_icon_asb = 100 0 0
-systray_background_id = 0
-
-# Clock
-time1_format = %H:%M
-time1_font = Sans Bold 13
-time1_font_color = #ffffff 100
-time2_format = %a %d %b
-time2_font = Sans 9
-time2_font_color = #8b949e 100
-clock_font_color = #ffffff 100
-clock_padding = 8 4
-clock_background_id = 0
-
-# Background 1 - panel
-rounded = 0
-border_width = 0
-background_color = #0d1117 100
-border_color = #21262d 100
-
-# Background 2 - active taskbar item
-rounded = 4
-border_width = 0
-background_color = #21262d 100
-border_color = #30363d 100
-
-# Background 3 - task
-rounded = 4
-border_width = 0
-background_color = #0d1117 0
-border_color = #30363d 0
-
-# Background 4 - active task
-rounded = 4
-border_width = 0
-background_color = #1f6feb 80
-border_color = #1f6feb 100
-
-CPEOF018
-
-RUN ln -sf /app/ob-rc.xml /root/.config/openbox/rc.xml     && ln -sf /app/ob-menu.xml /root/.config/openbox/menu.xml
+RUN mkdir -p $(dirname /app/frontend/package.json) && echo "ewogICJuYW1lIjogImNsb3VkcGxheS1mcm9udGVuZCIsCiAgInZlcnNpb24iOiAiMS4wLjAiLAogICJ0eXBlIjogIm1vZHVsZSIs\
+CiAgInNjcmlwdHMiOiB7CiAgICAiZGV2IjogInZpdGUgLS1wb3J0IDUxNzMiLAogICAgImJ1aWxkIjogInZpdGUgYnVpbGQiLAog\
+ICAgInByZXZpZXciOiAidml0ZSBwcmV2aWV3IgogIH0sCiAgImRlcGVuZGVuY2llcyI6IHsKICAgICJyZWFjdCI6ICJeMTguMi4w\
+IiwKICAgICJyZWFjdC1kb20iOiAiXjE4LjIuMCIKICB9LAogICJkZXZEZXBlbmRlbmNpZXMiOiB7CiAgICAiQHZpdGVqcy9wbHVn\
+aW4tcmVhY3QiOiAiXjQuMi4wIiwKICAgICJ2aXRlIjogIl41LjAuMCIKICB9Cn0K" | base64 -d > /app/frontend/package.json
+
+RUN mkdir -p $(dirname /app/frontend/vite.config.js) && echo "aW1wb3J0IHsgZGVmaW5lQ29uZmlnIH0gZnJvbSAndml0ZSc7CmltcG9ydCByZWFjdCBmcm9tICdAdml0ZWpzL3BsdWdpbi1yZWFj\
+dCc7CgpleHBvcnQgZGVmYXVsdCBkZWZpbmVDb25maWcoewogIHBsdWdpbnM6IFtyZWFjdCgpXSwKICBidWlsZDogewogICAgb3V0\
+RGlyOiAnZGlzdCcsCiAgICBlbXB0eU91dERpcjogdHJ1ZSwKICB9LAogIHNlcnZlcjogewogICAgcG9ydDogNTE3MywKICAgIHBy\
+b3h5OiB7CiAgICAgICcvYXBpJzogJ2h0dHA6Ly9sb2NhbGhvc3Q6MzAwMScsCiAgICB9LAogIH0sCn0pOwo=" | base64 -d > /app/frontend/vite.config.js
+
+RUN mkdir -p $(dirname /app/frontend/index.html) && echo "PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9InVrIj4KICA8aGVhZD4KICAgIDxtZXRhIGNoYXJzZXQ9IlVURi04IiAvPgogICAg\
+PG1ldGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmljZS13aWR0aCwgaW5pdGlhbC1zY2FsZT0xLjAiIC8+CiAg\
+ICA8dGl0bGU+Q2xvdWRQbGF5PC90aXRsZT4KICAgIDxsaW5rIHJlbD0icHJlY29ubmVjdCIgaHJlZj0iaHR0cHM6Ly9mb250cy5n\
+b29nbGVhcGlzLmNvbSIgLz4KICAgIDxsaW5rIHJlbD0icHJlY29ubmVjdCIgaHJlZj0iaHR0cHM6Ly9mb250cy5nc3RhdGljLmNv\
+bSIgY3Jvc3NvcmlnaW4gLz4KICAgIDxsaW5rIGhyZWY9Imh0dHBzOi8vZm9udHMuZ29vZ2xlYXBpcy5jb20vY3NzMj9mYW1pbHk9\
+U3BhY2UrR3JvdGVzazp3Z2h0QDMwMDs0MDA7NTAwOzYwMDs3MDAmZmFtaWx5PUludGVyOndnaHRANDAwOzUwMCZkaXNwbGF5PXN3\
+YXAiIHJlbD0ic3R5bGVzaGVldCIgLz4KICAgIDxzdHlsZT4KICAgICAgKiB7IG1hcmdpbjogMDsgcGFkZGluZzogMDsgYm94LXNp\
+emluZzogYm9yZGVyLWJveDsgfQogICAgICBodG1sLCBib2R5LCAjcm9vdCB7IGhlaWdodDogMTAwJTsgfQogICAgICBib2R5IHsg\
+YmFja2dyb3VuZDogIzA2MDYwZjsgb3ZlcmZsb3cteDogaGlkZGVuOyB9CiAgICA8L3N0eWxlPgogIDwvaGVhZD4KICA8Ym9keT4K\
+ICAgIDxkaXYgaWQ9InJvb3QiPjwvZGl2PgogICAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiIHNyYz0iL3NyYy9tYWluLmpzeCI+PC9z\
+Y3JpcHQ+CiAgPC9ib2R5Pgo8L2h0bWw+Cg==" | base64 -d > /app/frontend/index.html
+
+RUN mkdir -p $(dirname /app/frontend/src/main.jsx) && echo "aW1wb3J0IFJlYWN0IGZyb20gJ3JlYWN0JzsKaW1wb3J0IFJlYWN0RE9NIGZyb20gJ3JlYWN0LWRvbS9jbGllbnQnOwppbXBvcnQg\
+QXBwIGZyb20gJy4vQXBwLmpzeCc7CgpSZWFjdERPTS5jcmVhdGVSb290KGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdyb290Jykp\
+LnJlbmRlcigKICA8UmVhY3QuU3RyaWN0TW9kZT4KICAgIDxBcHAgLz4KICA8L1JlYWN0LlN0cmljdE1vZGU+Cik7Cg==" | base64 -d > /app/frontend/src/main.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/App.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUsIHVzZUNhbGxiYWNrLCB1c2VFZmZlY3QgfSBmcm9tICdyZWFjdCc7CmltcG9ydCBMb2dpbiBmcm9t\
+ICcuL2NvbXBvbmVudHMvTG9naW4uanN4JzsKaW1wb3J0IERhc2hib2FyZCBmcm9tICcuL2NvbXBvbmVudHMvRGFzaGJvYXJkLmpz\
+eCc7CmltcG9ydCBTZXNzaW9uVmlld2VyIGZyb20gJy4vY29tcG9uZW50cy9TZXNzaW9uVmlld2VyLmpzeCc7CmltcG9ydCBUb2Fz\
+dCBmcm9tICcuL2NvbXBvbmVudHMvVG9hc3QuanN4JzsKCmNvbnN0IGdldFRva2VuID0gKCkgPT4gbG9jYWxTdG9yYWdlLmdldEl0\
+ZW0oJ2NwX3Rva2VuJyk7CgpleHBvcnQgZGVmYXVsdCBmdW5jdGlvbiBBcHAoKSB7CiAgY29uc3QgW2F1dGhlZCwgc2V0QXV0aGVk\
+XSAgICAgICAgICAgPSB1c2VTdGF0ZSghIWdldFRva2VuKCkpOwogIGNvbnN0IFthY3RpdmVTZXNzaW9uLCBzZXRBY3RpdmVdICAg\
+ID0gdXNlU3RhdGUobnVsbCk7CiAgY29uc3QgW3Nlc3Npb25VcmwsIHNldFVybF0gICAgICAgICAgPSB1c2VTdGF0ZShudWxsKTsK\
+ICBjb25zdCBbdG9hc3RzLCBzZXRUb2FzdHNdICAgICAgICAgICA9IHVzZVN0YXRlKFtdKTsKCiAgY29uc3QgdG9hc3QgPSB1c2VD\
+YWxsYmFjaygobXNnLCB0eXBlID0gJ2luZm8nKSA9PiB7CiAgICBjb25zdCBpZCA9IERhdGUubm93KCkgKyBNYXRoLnJhbmRvbSgp\
+OwogICAgc2V0VG9hc3RzKHQgPT4gWy4uLnQsIHsgaWQsIG1zZywgdHlwZSB9XSk7CiAgICBzZXRUaW1lb3V0KCgpID0+IHNldFRv\
+YXN0cyh0ID0+IHQuZmlsdGVyKHggPT4geC5pZCAhPT0gaWQpKSwgNDAwMCk7CiAgfSwgW10pOwoKICBjb25zdCBoYW5kbGVMb2dp\
+biA9IGFzeW5jIChwYXNzd29yZCkgPT4gewogICAgY29uc3QgcmVzICA9IGF3YWl0IGZldGNoKCcvYXBpL2F1dGgvbG9naW4nLCB7\
+CiAgICAgIG1ldGhvZDogJ1BPU1QnLAogICAgICBoZWFkZXJzOiB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicg\
+fSwKICAgICAgYm9keTogSlNPTi5zdHJpbmdpZnkoeyBwYXNzd29yZCB9KSwKICAgIH0pOwogICAgY29uc3QgZGF0YSA9IGF3YWl0\
+IHJlcy5qc29uKCk7CiAgICBpZiAoIWRhdGEuc3VjY2VzcykgdGhyb3cgbmV3IEVycm9yKGRhdGEuZXJyb3IgfHwgJ9Cd0LXQstGW\
+0YDQvdC40Lkg0L/QsNGA0L7Qu9GMJyk7CiAgICBsb2NhbFN0b3JhZ2Uuc2V0SXRlbSgnY3BfdG9rZW4nLCBkYXRhLnRva2VuKTsK\
+ICAgIHNldEF1dGhlZCh0cnVlKTsKICB9OwoKICBjb25zdCBoYW5kbGVMb2dvdXQgPSAoKSA9PiB7CiAgICBsb2NhbFN0b3JhZ2Uu\
+cmVtb3ZlSXRlbSgnY3BfdG9rZW4nKTsKICAgIHNldEF1dGhlZChmYWxzZSk7CiAgICBzZXRBY3RpdmUobnVsbCk7CiAgICBzZXRV\
+cmwobnVsbCk7CiAgfTsKCiAgY29uc3QgaGFuZGxlU3RhcnQgPSBhc3luYyAodHlwZSwgb3B0aW9ucyA9IHt9KSA9PiB7CiAgICBj\
+b25zdCByZXMgPSBhd2FpdCBmZXRjaChgL2FwaS9zZXNzaW9ucy9zdGFydC8ke3R5cGV9YCwgewogICAgICBtZXRob2Q6ICdQT1NU\
+JywKICAgICAgaGVhZGVyczogewogICAgICAgICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicsCiAgICAgICAgJ0F1\
+dGhvcml6YXRpb24nOiBgQmVhcmVyICR7Z2V0VG9rZW4oKX1gLAogICAgICB9LAogICAgICBib2R5OiBKU09OLnN0cmluZ2lmeShv\
+cHRpb25zKSwKICAgIH0pOwogICAgY29uc3QgZGF0YSA9IGF3YWl0IHJlcy5qc29uKCk7CiAgICBpZiAoIWRhdGEuc3VjY2Vzcykg\
+dGhyb3cgbmV3IEVycm9yKGRhdGEuZXJyb3IpOwogICAgc2V0VXJsKGRhdGEudm5jVXJsKTsKICAgIHNldEFjdGl2ZSh0eXBlKTsK\
+ICAgIGNvbnN0IGljb25zID0geyBicm93c2VyOiAn8J+MkCcsIGRlc2t0b3A6ICfwn5al77iPJywgcGhvbmU6ICfwn5OxJyB9Owog\
+ICAgdG9hc3QoYCR7aWNvbnNbdHlwZV19INCh0LXRgdGW0Y8g0LfQsNC/0YPRidC10L3QsCFgLCAnc3VjY2VzcycpOwogIH07Cgog\
+IGNvbnN0IGhhbmRsZVN0b3AgPSBhc3luYyAoKSA9PiB7CiAgICBpZiAoYWN0aXZlU2Vzc2lvbikgewogICAgICBhd2FpdCBmZXRj\
+aChgL2FwaS9zZXNzaW9ucy9zdG9wLyR7YWN0aXZlU2Vzc2lvbn1gLCB7CiAgICAgICAgbWV0aG9kOiAnUE9TVCcsCiAgICAgICAg\
+aGVhZGVyczogeyAnQXV0aG9yaXphdGlvbic6IGBCZWFyZXIgJHtnZXRUb2tlbigpfWAgfSwKICAgICAgfSk7CiAgICAgIHRvYXN0\
+KCfQodC10YHRltGOINC30LDQstC10YDRiNC10L3QvicsICdpbmZvJyk7CiAgICB9CiAgICBzZXRBY3RpdmUobnVsbCk7CiAgICBz\
+ZXRVcmwobnVsbCk7CiAgfTsKCiAgaWYgKCFhdXRoZWQpICAgICAgcmV0dXJuIDw+PExvZ2luIG9uTG9naW49e2hhbmRsZUxvZ2lu\
+fSAvPjxUb2FzdCB0b2FzdHM9e3RvYXN0c30gLz48Lz47CiAgaWYgKGFjdGl2ZVNlc3Npb24pIHJldHVybiA8PjxTZXNzaW9uVmll\
+d2VyIHR5cGU9e2FjdGl2ZVNlc3Npb259IHVybD17c2Vzc2lvblVybH0gb25CYWNrPXtoYW5kbGVTdG9wfSAvPjxUb2FzdCB0b2Fz\
+dHM9e3RvYXN0c30gLz48Lz47CiAgcmV0dXJuIDw+PERhc2hib2FyZCBvblN0YXJ0PXtoYW5kbGVTdGFydH0gb25Mb2dvdXQ9e2hh\
+bmRsZUxvZ291dH0gdG9hc3Q9e3RvYXN0fSAvPjxUb2FzdCB0b2FzdHM9e3RvYXN0c30gLz48Lz47Cn0K" | base64 -d > /app/frontend/src/App.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/Login.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUgfSBmcm9tICdyZWFjdCc7CgpleHBvcnQgZGVmYXVsdCBmdW5jdGlvbiBMb2dpbih7IG9uTG9naW4g\
+fSkgewogIGNvbnN0IFtwdywgc2V0UHddICAgICAgICAgPSB1c2VTdGF0ZSgnJyk7CiAgY29uc3QgW2Vyciwgc2V0RXJyXSAgICAg\
+ICA9IHVzZVN0YXRlKCcnKTsKICBjb25zdCBbbG9hZGluZywgc2V0TG9hZF0gID0gdXNlU3RhdGUoZmFsc2UpOwogIGNvbnN0IFtz\
+aGFrZSwgc2V0U2hha2VdICAgPSB1c2VTdGF0ZShmYWxzZSk7CgogIGNvbnN0IHN1Ym1pdCA9IGFzeW5jICgpID0+IHsKICAgIGlm\
+ICghcHcpIHJldHVybjsKICAgIHNldExvYWQodHJ1ZSk7IHNldEVycignJyk7CiAgICB0cnkgewogICAgICBhd2FpdCBvbkxvZ2lu\
+KHB3KTsKICAgIH0gY2F0Y2ggKGUpIHsKICAgICAgc2V0RXJyKGUubWVzc2FnZSk7CiAgICAgIHNldFNoYWtlKHRydWUpOwogICAg\
+ICBzZXRUaW1lb3V0KCgpID0+IHNldFNoYWtlKGZhbHNlKSwgNTAwKTsKICAgIH0gZmluYWxseSB7IHNldExvYWQoZmFsc2UpOyB9\
+CiAgfTsKCiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3Mucm9vdH0+CiAgICAgIDxBdXJvcmEgLz4KICAgICAgPGRpdiBzdHls\
+ZT17eyAuLi5zLmNhcmQsIGFuaW1hdGlvbjogc2hha2UgPyAnc2hha2UgLjRzIGVhc2UnIDogJ25vbmUnIH19PgogICAgICAgIDxk\
+aXYgc3R5bGU9e3MubG9nb1dyYXB9PgogICAgICAgICAgPHNwYW4gc3R5bGU9e3MubG9nb0ljb259PuKaoTwvc3Bhbj4KICAgICAg\
+ICAgIDxzcGFuIHN0eWxlPXtzLmxvZ29UZXh0fT5DbG91ZFBsYXk8L3NwYW4+CiAgICAgICAgICA8c3BhbiBzdHlsZT17cy52ZXJz\
+aW9ufT52MS4yPC9zcGFuPgogICAgICAgIDwvZGl2PgogICAgICAgIDxwIHN0eWxlPXtzLmhpbnR9PtCS0LLQtdC00Lgg0L/QsNGA\
+0L7Qu9GMINC00LvRjyDQtNC+0YHRgtGD0L/RgzwvcD4KICAgICAgICA8aW5wdXQKICAgICAgICAgIHR5cGU9InBhc3N3b3JkIgog\
+ICAgICAgICAgcGxhY2Vob2xkZXI9IuKAouKAouKAouKAouKAouKAouKAouKAoiIKICAgICAgICAgIHZhbHVlPXtwd30KICAgICAg\
+ICAgIG9uQ2hhbmdlPXtlID0+IHNldFB3KGUudGFyZ2V0LnZhbHVlKX0KICAgICAgICAgIG9uS2V5RG93bj17ZSA9PiBlLmtleSA9\
+PT0gJ0VudGVyJyAmJiBzdWJtaXQoKX0KICAgICAgICAgIHN0eWxlPXtzLmlucHV0fQogICAgICAgICAgYXV0b0ZvY3VzCiAgICAg\
+ICAgLz4KICAgICAgICB7ZXJyICYmIDxwIHN0eWxlPXtzLmVycn0+4pqgIHtlcnJ9PC9wPn0KICAgICAgICA8YnV0dG9uIG9uQ2xp\
+Y2s9e3N1Ym1pdH0gZGlzYWJsZWQ9e2xvYWRpbmd9IHN0eWxlPXtzLmJ0bn0+CiAgICAgICAgICB7bG9hZGluZyA/IDxzcGFuIHN0\
+eWxlPXtzLnNwaW5uZXJ9IC8+IDogJ9Cj0LLRltC50YLQuCDihpInfQogICAgICAgIDwvYnV0dG9uPgogICAgICAgIDxwIHN0eWxl\
+PXtzLmZvb3Rlcn0+0J7RgdC+0LHQuNGB0YLQuNC5INGF0LzQsNGA0L3QuNC5INGB0LXRgNCy0LXRgDwvcD4KICAgICAgPC9kaXY+\
+CiAgICAgIDxzdHlsZT57YAogICAgICAgIEBrZXlmcmFtZXMgc2hha2UgewogICAgICAgICAgMCUsMTAwJXt0cmFuc2Zvcm06dHJh\
+bnNsYXRlWCgwKX0gMjAle3RyYW5zZm9ybTp0cmFuc2xhdGVYKC0xMHB4KX0KICAgICAgICAgIDQwJXt0cmFuc2Zvcm06dHJhbnNs\
+YXRlWCgxMHB4KX0gNjAle3RyYW5zZm9ybTp0cmFuc2xhdGVYKC02cHgpfQogICAgICAgICAgODAle3RyYW5zZm9ybTp0cmFuc2xh\
+dGVYKDZweCl9CiAgICAgICAgfQogICAgICAgIEBrZXlmcmFtZXMgc3BpbkwgeyB0b3t0cmFuc2Zvcm06cm90YXRlKDM2MGRlZyl9\
+IH0KICAgICAgICBAa2V5ZnJhbWVzIGZhZGVJbiB7IGZyb217b3BhY2l0eTowO3RyYW5zZm9ybTp0cmFuc2xhdGVZKDIwcHgpfSB0\
+b3tvcGFjaXR5OjE7dHJhbnNmb3JtOm5vbmV9IH0KICAgICAgYH08L3N0eWxlPgogICAgPC9kaXY+CiAgKTsKfQoKZnVuY3Rpb24g\
+QXVyb3JhKCkgewogIHJldHVybiAoCiAgICA8ZGl2IHN0eWxlPXthLndyYXB9PgogICAgICA8ZGl2IHN0eWxlPXt7IC4uLmEub3Ji\
+LCAuLi5hLm8xIH19IC8+CiAgICAgIDxkaXYgc3R5bGU9e3sgLi4uYS5vcmIsIC4uLmEubzIgfX0gLz4KICAgICAgPGRpdiBzdHls\
+ZT17eyAuLi5hLm9yYiwgLi4uYS5vMyB9fSAvPgogICAgICA8ZGl2IHN0eWxlPXt7IC4uLmEub3JiLCAuLi5hLm80IH19IC8+CiAg\
+ICAgIDxzdHlsZT57YAogICAgICAgIEBrZXlmcmFtZXMgYTF7MCUsMTAwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKDAsMClzY2FsZSgx\
+KX01MCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSg2MHB4LC00MHB4KXNjYWxlKDEuMTUpfX0KICAgICAgICBAa2V5ZnJhbWVzIGEyezAl\
+LDEwMCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSgwLDApc2NhbGUoMSl9NTAle3RyYW5zZm9ybTp0cmFuc2xhdGUoLTUwcHgsNjBweClz\
+Y2FsZSgxLjEpfX0KICAgICAgICBAa2V5ZnJhbWVzIGEzezAlLDEwMCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSgtNTAlLC01MCUpc2Nh\
+bGUoMSl9NTAle3RyYW5zZm9ybTp0cmFuc2xhdGUoLTUwJSwtNTAlKXNjYWxlKDEuMil9fQogICAgICAgIEBrZXlmcmFtZXMgYTR7\
+MCUsMTAwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKDAsMClzY2FsZSgxKX01MCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSg0MHB4LDUwcHgp\
+c2NhbGUoMC45KX19CiAgICAgIGB9PC9zdHlsZT4KICAgIDwvZGl2PgogICk7Cn0KCmNvbnN0IHMgPSB7CiAgcm9vdDogeyBtaW5I\
+ZWlnaHQ6JzEwMHZoJywgZGlzcGxheTonZmxleCcsIGFsaWduSXRlbXM6J2NlbnRlcicsIGp1c3RpZnlDb250ZW50OidjZW50ZXIn\
+LAogICAgYmFja2dyb3VuZDonIzAzMDMwOCcsIGZvbnRGYW1pbHk6IidTcGFjZSBHcm90ZXNrJyxzYW5zLXNlcmlmIiwgcG9zaXRp\
+b246J3JlbGF0aXZlJyB9LAogIGNhcmQ6IHsgcG9zaXRpb246J3JlbGF0aXZlJywgekluZGV4OjEwLCB3aWR0aDozNjAsIHBhZGRp\
+bmc6JzQwcHggMzZweCcsCiAgICBiYWNrZ3JvdW5kOidyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpJywgYmFja2Ryb3BGaWx0ZXI6J2Js\
+dXIoMjRweCknLAogICAgYm9yZGVyOicxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwwLjEpJywKICAgIGJveFNoYWRvdzonMCAw\
+IDAgMXB4IHJnYmEoMjU1LDI1NSwyNTUsMC4wNCkgaW5zZXQsIDAgNDBweCA4MHB4IHJnYmEoMCwwLDAsMC41KScsCiAgICBib3Jk\
+ZXJSYWRpdXM6MjQsIGFuaW1hdGlvbjonZmFkZUluIC41cyBlYXNlJyB9LAogIGxvZ29XcmFwOiB7IGRpc3BsYXk6J2ZsZXgnLCBh\
+bGlnbkl0ZW1zOidjZW50ZXInLCBnYXA6MTAsIG1hcmdpbkJvdHRvbToyOCB9LAogIGxvZ29JY29uOiB7IGZvbnRTaXplOjMyLCBm\
+aWx0ZXI6J2Ryb3Atc2hhZG93KDAgMCAxMnB4IHJnYmEoMjU1LDIwMCwwLC43KSknIH0sCiAgbG9nb1RleHQ6IHsgZm9udFNpemU6\
+MjIsIGZvbnRXZWlnaHQ6NzAwLCBjb2xvcjonI2ZmZicsIGxldHRlclNwYWNpbmc6LTAuNSB9LAogIHZlcnNpb246IHsgZm9udFNp\
+emU6MTEsIGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC4zKScsIGJvcmRlcjonMXB4IHNvbGlkIHJnYmEoMjU1LDI1NSwyNTUsLjEp\
+JywKICAgIHBhZGRpbmc6JzJweCA3cHgnLCBib3JkZXJSYWRpdXM6NiwgZm9udEZhbWlseToiJ0ludGVyJyxzYW5zLXNlcmlmIiB9\
+LAogIGhpbnQ6IHsgZm9udFNpemU6MTQsIGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC40NSknLCBtYXJnaW5Cb3R0b206MjAsCiAg\
+ICBmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYiIH0sCiAgaW5wdXQ6IHsgd2lkdGg6JzEwMCUnLCBwYWRkaW5nOicxNHB4\
+IDE2cHgnLCBiYWNrZ3JvdW5kOidyZ2JhKDI1NSwyNTUsMjU1LC4wNyknLAogICAgYm9yZGVyOicxcHggc29saWQgcmdiYSgyNTUs\
+MjU1LDI1NSwuMTIpJywgYm9yZGVyUmFkaXVzOjEyLCBjb2xvcjonI2ZmZicsCiAgICBmb250U2l6ZToxNiwgb3V0bGluZTonbm9u\
+ZScsIGJveFNpemluZzonYm9yZGVyLWJveCcsIGZvbnRGYW1pbHk6IidTcGFjZSBHcm90ZXNrJyxzYW5zLXNlcmlmIiwKICAgIG1h\
+cmdpbkJvdHRvbTo4IH0sCiAgZXJyOiB7IGZvbnRTaXplOjEzLCBjb2xvcjonI2Y4NzE3MScsIG1hcmdpbjonNHB4IDAgOHB4Jywg\
+Zm9udEZhbWlseToiJ0ludGVyJyxzYW5zLXNlcmlmIiB9LAogIGJ0bjogeyB3aWR0aDonMTAwJScsIHBhZGRpbmc6JzE0cHgnLCBi\
+YWNrZ3JvdW5kOidsaW5lYXItZ3JhZGllbnQoMTM1ZGVnLCM0ZjQ2ZTUsIzdjM2FlZCknLAogICAgYm9yZGVyOidub25lJywgYm9y\
+ZGVyUmFkaXVzOjEyLCBjb2xvcjonI2ZmZicsIGZvbnRTaXplOjE1LCBmb250V2VpZ2h0OjYwMCwKICAgIGN1cnNvcjoncG9pbnRl\
+cicsIG1hcmdpblRvcDo4LCBmb250RmFtaWx5OiInU3BhY2UgR3JvdGVzaycsc2Fucy1zZXJpZiIsCiAgICBib3hTaGFkb3c6JzAg\
+NHB4IDI0cHggcmdiYSg3OSw3MCwyMjksLjQpJywgdHJhbnNpdGlvbjonb3BhY2l0eSAuMnMnIH0sCiAgc3Bpbm5lcjogeyBkaXNw\
+bGF5OidpbmxpbmUtYmxvY2snLCB3aWR0aDoxNiwgaGVpZ2h0OjE2LAogICAgYm9yZGVyOicycHggc29saWQgcmdiYSgyNTUsMjU1\
+LDI1NSwuMyknLCBib3JkZXJUb3BDb2xvcjonI2ZmZicsCiAgICBib3JkZXJSYWRpdXM6JzUwJScsIGFuaW1hdGlvbjonc3Bpbkwg\
+LjdzIGxpbmVhciBpbmZpbml0ZScgfSwKICBmb290ZXI6IHsgdGV4dEFsaWduOidjZW50ZXInLCBmb250U2l6ZToxMiwgY29sb3I6\
+J3JnYmEoMjU1LDI1NSwyNTUsLjE4KScsCiAgICBtYXJnaW5Ub3A6MjQsIGZvbnRGYW1pbHk6IidJbnRlcicsc2Fucy1zZXJpZiIg\
+fSwKfTsKY29uc3QgYSA9IHsKICB3cmFwOiB7IHBvc2l0aW9uOidmaXhlZCcsIGluc2V0OjAsIHBvaW50ZXJFdmVudHM6J25vbmUn\
+LCBvdmVyZmxvdzonaGlkZGVuJyB9LAogIG9yYjogIHsgcG9zaXRpb246J2Fic29sdXRlJywgYm9yZGVyUmFkaXVzOic1MCUnLCBm\
+aWx0ZXI6J2JsdXIoMTAwcHgpJyB9LAogIG8xOiB7IHdpZHRoOjcwMCwgaGVpZ2h0OjcwMCwgYmFja2dyb3VuZDonIzRmNDZlNScs\
+IG9wYWNpdHk6LjEyLAogICAgdG9wOi0yMDAsIHJpZ2h0Oi0xMDAsIGFuaW1hdGlvbjonYTEgMTBzIGVhc2UtaW4tb3V0IGluZmlu\
+aXRlJyB9LAogIG8yOiB7IHdpZHRoOjYwMCwgaGVpZ2h0OjYwMCwgYmFja2dyb3VuZDonIzdjM2FlZCcsIG9wYWNpdHk6LjEsCiAg\
+ICBib3R0b206LTE1MCwgbGVmdDotMTUwLCBhbmltYXRpb246J2EyIDEzcyBlYXNlLWluLW91dCBpbmZpbml0ZScgfSwKICBvMzog\
+eyB3aWR0aDo0MDAsIGhlaWdodDo0MDAsIGJhY2tncm91bmQ6JyMwNmI2ZDQnLCBvcGFjaXR5Oi4wNywKICAgIHRvcDonNTAlJywg\
+bGVmdDonNTAlJywgYW5pbWF0aW9uOidhMyA4cyBlYXNlLWluLW91dCBpbmZpbml0ZScgfSwKICBvNDogeyB3aWR0aDozMDAsIGhl\
+aWdodDozMDAsIGJhY2tncm91bmQ6JyMxMGI5ODEnLCBvcGFjaXR5Oi4wNiwKICAgIGJvdHRvbToxMDAsIHJpZ2h0OjEwMCwgYW5p\
+bWF0aW9uOidhNCAxMXMgZWFzZS1pbi1vdXQgaW5maW5pdGUnIH0sCn07Cg==" | base64 -d > /app/frontend/src/components/Login.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/Dashboard.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUsIHVzZUVmZmVjdCB9IGZyb20gJ3JlYWN0JzsKaW1wb3J0IFNlcnZpY2VDYXJkIGZyb20gJy4vU2Vy\
+dmljZUNhcmQuanN4JzsKCmNvbnN0IFNFUlZJQ0VTID0gWwogIHsgaWQ6J2Jyb3dzZXInLCBpY29uOifwn4yQJywgbGFiZWw6J0Ns\
+b3VkIEJyb3dzZXInLAogICAgZGVzYzonRmlyZWZveCDRgyDRhdC80LDRgNGWLiDQn9C+0LLQvdC40Lkg0ZbQvdGC0LXRgNC90LXR\
+giwg0L3RltGH0L7Qs9C+INC90LUg0LPRgNGD0LfQuNGC0Ywg0YLQstGW0Lkg0L/RgNC40YHRgtGA0ZbQuS4nLAogICAgYWNjZW50\
+OicjNGY0NmU1JywgZzonbGluZWFyLWdyYWRpZW50KDEzNWRlZywjNGY0NmU1LCM3YzNhZWQpJywgZ2xvdzonIzRmNDZlNScgfSwK\
+ICB7IGlkOidkZXNrdG9wJywgaWNvbjon8J+Wpe+4jycsIGxhYmVsOidDbG91ZCBQQycsCiAgICBkZXNjOifQn9C+0LLQvdC+0YbR\
+ltC90L3QuNC5IExpbnV4INCf0JouIEZpcmVmb3gsINGE0LDQudC70LgsINGC0LXRgNC80ZbQvdCw0Lsg4oCUINCy0YHQtSDRh9C1\
+0YDQtdC3INCx0YDQsNGD0LfQtdGALicsCiAgICBhY2NlbnQ6JyMwZWE1ZTknLCBnOidsaW5lYXItZ3JhZGllbnQoMTM1ZGVnLCMw\
+ZWE1ZTksIzI1NjNlYiknLCBnbG93OicjMGVhNWU5JyB9LAogIHsgaWQ6J3Bob25lJywgaWNvbjon8J+TsScsIGxhYmVsOidDbG91\
+ZCBQaG9uZScsCiAgICBkZXNjOidBbmRyb2lkLdGW0L3RgtC10YDRhNC10LnRgSDRgyDRhdC80LDRgNGWLiDQodC+0YbQvNC10YDQ\
+tdC20ZYsINGO0YLRg9CxLCDQvNC10YHQtdC90LTQttC10YDQuC4nLAogICAgYWNjZW50OicjMTBiOTgxJywgZzonbGluZWFyLWdy\
+YWRpZW50KDEzNWRlZywjMTBiOTgxLCMwNTk2NjkpJywgZ2xvdzonIzEwYjk4MScgfSwKXTsKCmV4cG9ydCBkZWZhdWx0IGZ1bmN0\
+aW9uIERhc2hib2FyZCh7IG9uU3RhcnQsIG9uTG9nb3V0LCB0b2FzdCB9KSB7CiAgY29uc3QgW2xvYWRpbmcsIHNldExvYWRpbmdd\
+ICAgPSB1c2VTdGF0ZShudWxsKTsKICBjb25zdCBbc3RhdHVzZXMsIHNldFN0YXR1c2VzXSA9IHVzZVN0YXRlKHt9KTsKICBjb25z\
+dCBbdGltZSwgc2V0VGltZV0gICAgICAgICA9IHVzZVN0YXRlKG5ldyBEYXRlKCkpOwogIGNvbnN0IFtob3ZlcmVkLCBzZXRIb3Zl\
+cmVkXSAgID0gdXNlU3RhdGUobnVsbCk7CgogIHVzZUVmZmVjdCgoKT0+ewogICAgY29uc3QgcG9sbD1hc3luYygpPT57CiAgICAg\
+IHRyeXsKICAgICAgICBjb25zdCByPWF3YWl0IGZldGNoKCcvYXBpL3Nlc3Npb25zL3N0YXR1cycsewogICAgICAgICAgaGVhZGVy\
+czp7J0F1dGhvcml6YXRpb24nOmBCZWFyZXIgJHtsb2NhbFN0b3JhZ2UuZ2V0SXRlbSgnY3BfdG9rZW4nKX1gfX0pOwogICAgICAg\
+IHNldFN0YXR1c2VzKGF3YWl0IHIuanNvbigpKTsKICAgICAgfWNhdGNoe30KICAgIH07CiAgICBwb2xsKCk7IGNvbnN0IGlkPXNl\
+dEludGVydmFsKHBvbGwsNTAwMCk7IHJldHVybigpPT5jbGVhckludGVydmFsKGlkKTsKICB9LFtdKTsKCiAgdXNlRWZmZWN0KCgp\
+PT57IGNvbnN0IGlkPXNldEludGVydmFsKCgpPT5zZXRUaW1lKG5ldyBEYXRlKCkpLDEwMDApOyByZXR1cm4oKT0+Y2xlYXJJbnRl\
+cnZhbChpZCk7IH0sW10pOwoKICBjb25zdCBoYW5kbGVTdGFydD1hc3luYyhzdik9PnsKICAgIHNldExvYWRpbmcoc3YuaWQpOwog\
+ICAgdHJ5eyBhd2FpdCBvblN0YXJ0KHN2LmlkKTsgfQogICAgY2F0Y2goZSl7IHRvYXN0KGUubWVzc2FnZSwnZXJyb3InKTsgfQog\
+ICAgZmluYWxseXsgc2V0TG9hZGluZyhudWxsKTsgfQogIH07CgogIGNvbnN0IGhhbmRsZVN0b3A9YXN5bmModHlwZSk9PnsKICAg\
+IGF3YWl0IGZldGNoKGAvYXBpL3Nlc3Npb25zL3N0b3AvJHt0eXBlfWAse21ldGhvZDonUE9TVCcsCiAgICAgIGhlYWRlcnM6eydB\
+dXRob3JpemF0aW9uJzpgQmVhcmVyICR7bG9jYWxTdG9yYWdlLmdldEl0ZW0oJ2NwX3Rva2VuJyl9YH19KTsKICAgIHNldFN0YXR1\
+c2VzKHM9Pih7Li4ucyxbdHlwZV06e3J1bm5pbmc6ZmFsc2V9fSkpOwogICAgdG9hc3QoJ9Ch0LXRgdGW0Y4g0LfRg9C/0LjQvdC1\
+0L3QvicsJ2luZm8nKTsKICB9OwoKICBjb25zdCBwYWQ9bj0+U3RyaW5nKG4pLnBhZFN0YXJ0KDIsJzAnKTsKICBjb25zdCB0aW1l\
+U3RyPWAke3BhZCh0aW1lLmdldEhvdXJzKCkpfToke3BhZCh0aW1lLmdldE1pbnV0ZXMoKSl9OiR7cGFkKHRpbWUuZ2V0U2Vjb25k\
+cygpKX1gOwogIGNvbnN0IGRhdGVTdHI9dGltZS50b0xvY2FsZURhdGVTdHJpbmcoJ3VrLVVBJyx7d2Vla2RheTonbG9uZycsZGF5\
+OidudW1lcmljJyxtb250aDonbG9uZyd9KTsKICBjb25zdCBhY3RpdmU9T2JqZWN0LnZhbHVlcyhzdGF0dXNlcykuZmlsdGVyKHM9\
+PnM/LnJ1bm5pbmcpLmxlbmd0aDsKCiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3Mucm9vdH0+CiAgICAgIDxCRyAvPgoKICAg\
+ICAgey8qIFRPUCBCQVIgKi99CiAgICAgIDxoZWFkZXIgc3R5bGU9e3MudG9wYmFyfT4KICAgICAgICA8ZGl2IHN0eWxlPXtzLmJy\
+YW5kfT4KICAgICAgICAgIDxzcGFuIHN0eWxlPXtzLmJyYW5kSWNvbn0+4pqhPC9zcGFuPgogICAgICAgICAgPHNwYW4gc3R5bGU9\
+e3MuYnJhbmROYW1lfT5DbG91ZFBsYXk8L3NwYW4+CiAgICAgICAgICA8c3BhbiBzdHlsZT17cy5icmFuZFZlcn0+djEuMzwvc3Bh\
+bj4KICAgICAgICA8L2Rpdj4KICAgICAgICA8ZGl2IHN0eWxlPXtzLnRvcENlbnRlcn0+CiAgICAgICAgICB7YWN0aXZlPjAgJiYg\
+KAogICAgICAgICAgICA8ZGl2IHN0eWxlPXtzLmFjdGl2ZVBpbGx9PgogICAgICAgICAgICAgIDxzcGFuIHN0eWxlPXtzLmFjdGl2\
+ZURvdH0vPgogICAgICAgICAgICAgIHthY3RpdmV9IHthY3RpdmU9PT0xPyfRgdC10YHRltGPINCw0LrRgtC40LLQvdCwJzon0YHQ\
+tdGB0ZbRlyDQsNC60YLQuNCy0L3Rlid9CiAgICAgICAgICAgIDwvZGl2PgogICAgICAgICAgKX0KICAgICAgICA8L2Rpdj4KICAg\
+ICAgICA8ZGl2IHN0eWxlPXtzLnRvcFJpZ2h0fT4KICAgICAgICAgIDxkaXYgc3R5bGU9e3MuY2xvY2tCb3h9PgogICAgICAgICAg\
+ICA8ZGl2IHN0eWxlPXtzLmNsb2NrVGltZX0+e3RpbWVTdHJ9PC9kaXY+CiAgICAgICAgICAgIDxkaXYgc3R5bGU9e3MuY2xvY2tE\
+YXRlfT57ZGF0ZVN0cn08L2Rpdj4KICAgICAgICAgIDwvZGl2PgogICAgICAgICAgPGJ1dHRvbiBzdHlsZT17cy5sb2dvdXRCdG59\
+IG9uQ2xpY2s9e29uTG9nb3V0fSB0aXRsZT0i0JLQuNC50YLQuCI+CiAgICAgICAgICAgIDxzcGFuPuKPuzwvc3Bhbj4KICAgICAg\
+ICAgIDwvYnV0dG9uPgogICAgICAgIDwvZGl2PgogICAgICA8L2hlYWRlcj4KCiAgICAgIHsvKiBIRVJPICovfQogICAgICA8ZGl2\
+IHN0eWxlPXtzLmhlcm99PgogICAgICAgIDxkaXYgc3R5bGU9e3MuaGVyb0lubmVyfT4KICAgICAgICAgIDxwIHN0eWxlPXtzLmhl\
+cm9UYWd9PuKYgSDQntGB0L7QsdC40YHRgtC40Lkg0YXQvNCw0YDQvdC40Lkg0YHQtdGA0LLQtdGAPC9wPgogICAgICAgICAgPGgx\
+IHN0eWxlPXtzLmhlcm9UaXRsZX0+CiAgICAgICAgICAgINCX0LDQv9GD0YHQutCw0Lkg0LHRg9C00Ywt0YnQvjxici8+CiAgICAg\
+ICAgICAgIDxzcGFuIHN0eWxlPXtzLmhlcm9HcmFkfT7Qv9GA0Y/QvNC+INCyINCx0YDQsNGD0LfQtdGA0ZY8L3NwYW4+CiAgICAg\
+ICAgICA8L2gxPgogICAgICAgICAgPHAgc3R5bGU9e3MuaGVyb1N1Yn0+RmlyZWZveCwgTGludXgg0J/QmiDQsNCx0L4gQW5kcm9p\
+ZCDigJQg0LHQtdC3INC90LDQstCw0L3RgtCw0LbQtdC90L3RjyDQvdCwINGC0LLRltC5INC00LXQstCw0LnRgS48L3A+CiAgICAg\
+ICAgPC9kaXY+CiAgICAgIDwvZGl2PgoKICAgICAgey8qIENBUkRTICovfQogICAgICA8ZGl2IHN0eWxlPXtzLmNhcmRzV3JhcH0+\
+CiAgICAgICAgPGRpdiBzdHlsZT17cy5jYXJkc30+CiAgICAgICAgICB7U0VSVklDRVMubWFwKHN2PT4oCiAgICAgICAgICAgIDxT\
+ZXJ2aWNlQ2FyZCBrZXk9e3N2LmlkfSBzZXJ2aWNlPXtzdn0KICAgICAgICAgICAgICBzdGF0dXM9e3N0YXR1c2VzW3N2LmlkXX0K\
+ICAgICAgICAgICAgICBsb2FkaW5nPXtsb2FkaW5nPT09c3YuaWR9CiAgICAgICAgICAgICAgb25TdGFydD17KCk9PmhhbmRsZVN0\
+YXJ0KHN2KX0KICAgICAgICAgICAgICBvblJlY29ubmVjdD17KCk9Pm9uU3RhcnQoc3YuaWQpLmNhdGNoKCgpPT57fSl9CiAgICAg\
+ICAgICAgICAgb25TdG9wPXsoKT0+aGFuZGxlU3RvcChzdi5pZCl9CiAgICAgICAgICAgIC8+CiAgICAgICAgICApKX0KICAgICAg\
+ICA8L2Rpdj4KICAgICAgPC9kaXY+CgogICAgICB7LyogRk9PVEVSICovfQogICAgICA8ZGl2IHN0eWxlPXtzLmZvb3R9PgogICAg\
+ICAgIDxzcGFuIHN0eWxlPXtzLmZvb3RJdGVtfT5DbG91ZFBsYXkgdjEuMzwvc3Bhbj4KICAgICAgICA8c3BhbiBzdHlsZT17cy5m\
+b290RG90fT7Ctzwvc3Bhbj4KICAgICAgICA8c3BhbiBzdHlsZT17cy5mb290SXRlbX0+0J/RgNC40LLQsNGC0L3QuNC5INGB0LXR\
+gNCy0LXRgDwvc3Bhbj4KICAgICAgICA8c3BhbiBzdHlsZT17cy5mb290RG90fT7Ctzwvc3Bhbj4KICAgICAgICA8c3BhbiBzdHls\
+ZT17cy5mb290SXRlbX0+Mi0zINC60L7RgNC40YHRgtGD0LLQsNGH0ZY8L3NwYW4+CiAgICAgIDwvZGl2PgoKICAgICAgPHN0eWxl\
+PntgCiAgICAgICAgQGtleWZyYW1lcyBiZzF7MCUsMTAwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKDAsMCkgc2NhbGUoMSl9NTAle3Ry\
+YW5zZm9ybTp0cmFuc2xhdGUoNjBweCwtODBweCkgc2NhbGUoMS4xNSl9fQogICAgICAgIEBrZXlmcmFtZXMgYmcyezAlLDEwMCV7\
+dHJhbnNmb3JtOnRyYW5zbGF0ZSgwLDApIHNjYWxlKDEpfTUwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKC04MHB4LDYwcHgpIHNjYWxl\
+KDEuMSl9fQogICAgICAgIEBrZXlmcmFtZXMgYmczezAlLDEwMCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSgtNTAlLC01MCUpIHNjYWxl\
+KDEpfTUwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKC01MCUsLTUwJSkgc2NhbGUoMS4yNSl9fQogICAgICAgIEBrZXlmcmFtZXMgYmc0\
+ezAlLDEwMCV7dHJhbnNmb3JtOnRyYW5zbGF0ZSgwLDApfTUwJXt0cmFuc2Zvcm06dHJhbnNsYXRlKDUwcHgsMzBweCl9fQogICAg\
+ICAgIEBrZXlmcmFtZXMgZ3JhZEFuaW17MCUsMTAwJXtiYWNrZ3JvdW5kLXBvc2l0aW9uOjAlIDUwJX01MCV7YmFja2dyb3VuZC1w\
+b3NpdGlvbjoxMDAlIDUwJX19CiAgICAgICAgQGtleWZyYW1lcyBmYWRlVXB7ZnJvbXtvcGFjaXR5OjA7dHJhbnNmb3JtOnRyYW5z\
+bGF0ZVkoMzBweCl9dG97b3BhY2l0eToxO3RyYW5zZm9ybTpub25lfX0KICAgICAgICBAa2V5ZnJhbWVzIGRvdFB1bHNlezAlLDEw\
+MCV7b3BhY2l0eToxO3RyYW5zZm9ybTpzY2FsZSgxKX01MCV7b3BhY2l0eTouNjt0cmFuc2Zvcm06c2NhbGUoLjgpfX0KICAgICAg\
+ICBAa2V5ZnJhbWVzIHRpY2tBbmlte2Zyb217b3BhY2l0eTowfXRve29wYWNpdHk6MX19CiAgICAgIGB9PC9zdHlsZT4KICAgIDwv\
+ZGl2PgogICk7Cn0KCmZ1bmN0aW9uIEJHKCl7CiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3twb3NpdGlvbjonZml4ZWQnLGlu\
+c2V0OjAsekluZGV4OjAsb3ZlcmZsb3c6J2hpZGRlbicsYmFja2dyb3VuZDonIzAzMDMwOCcscG9pbnRlckV2ZW50czonbm9uZSd9\
+fT4KICAgICAgPGRpdiBzdHlsZT17e3Bvc2l0aW9uOidhYnNvbHV0ZScsd2lkdGg6MTAwMCxoZWlnaHQ6MTAwMCxib3JkZXJSYWRp\
+dXM6JzUwJScsCiAgICAgICAgYmFja2dyb3VuZDoncmFkaWFsLWdyYWRpZW50KGNpcmNsZSxyZ2JhKDc5LDcwLDIyOSwuMTgpIDAl\
+LHRyYW5zcGFyZW50IDcwJSknLAogICAgICAgIHRvcDotNDAwLHJpZ2h0Oi0zMDAsZmlsdGVyOidibHVyKDQwcHgpJyxhbmltYXRp\
+b246J2JnMSAxNHMgZWFzZS1pbi1vdXQgaW5maW5pdGUnfX0vPgogICAgICA8ZGl2IHN0eWxlPXt7cG9zaXRpb246J2Fic29sdXRl\
+Jyx3aWR0aDo5MDAsaGVpZ2h0OjkwMCxib3JkZXJSYWRpdXM6JzUwJScsCiAgICAgICAgYmFja2dyb3VuZDoncmFkaWFsLWdyYWRp\
+ZW50KGNpcmNsZSxyZ2JhKDEyNCw1OCwyMzcsLjE0KSAwJSx0cmFuc3BhcmVudCA3MCUpJywKICAgICAgICBib3R0b206LTQwMCxs\
+ZWZ0Oi0zMDAsZmlsdGVyOidibHVyKDQwcHgpJyxhbmltYXRpb246J2JnMiAxN3MgZWFzZS1pbi1vdXQgaW5maW5pdGUnfX0vPgog\
+ICAgICA8ZGl2IHN0eWxlPXt7cG9zaXRpb246J2Fic29sdXRlJyx3aWR0aDo3MDAsaGVpZ2h0OjcwMCxib3JkZXJSYWRpdXM6JzUw\
+JScsCiAgICAgICAgYmFja2dyb3VuZDoncmFkaWFsLWdyYWRpZW50KGNpcmNsZSxyZ2JhKDE0LDE2NSwyMzMsLjEpIDAlLHRyYW5z\
+cGFyZW50IDcwJSknLAogICAgICAgIHRvcDonNTAlJyxsZWZ0Oic1MCUnLGZpbHRlcjonYmx1cig0MHB4KScsYW5pbWF0aW9uOidi\
+ZzMgMTFzIGVhc2UtaW4tb3V0IGluZmluaXRlJ319Lz4KICAgICAgPGRpdiBzdHlsZT17e3Bvc2l0aW9uOidhYnNvbHV0ZScsd2lk\
+dGg6NTAwLGhlaWdodDo1MDAsYm9yZGVyUmFkaXVzOic1MCUnLAogICAgICAgIGJhY2tncm91bmQ6J3JhZGlhbC1ncmFkaWVudChj\
+aXJjbGUscmdiYSgxNiwxODUsMTI5LC4wOCkgMCUsdHJhbnNwYXJlbnQgNzAlKScsCiAgICAgICAgYm90dG9tOjUwLHJpZ2h0OjUw\
+LGZpbHRlcjonYmx1cig0MHB4KScsYW5pbWF0aW9uOidiZzQgMTVzIGVhc2UtaW4tb3V0IGluZmluaXRlJ319Lz4KICAgICAgPGRp\
+diBzdHlsZT17e3Bvc2l0aW9uOidhYnNvbHV0ZScsaW5zZXQ6MCwKICAgICAgICBiYWNrZ3JvdW5kSW1hZ2U6J2xpbmVhci1ncmFk\
+aWVudChyZ2JhKDI1NSwyNTUsMjU1LC4wMjUpIDFweCx0cmFuc3BhcmVudCAxcHgpLGxpbmVhci1ncmFkaWVudCg5MGRlZyxyZ2Jh\
+KDI1NSwyNTUsMjU1LC4wMjUpIDFweCx0cmFuc3BhcmVudCAxcHgpJywKICAgICAgICBiYWNrZ3JvdW5kU2l6ZTonNjRweCA2NHB4\
+J319Lz4KICAgIDwvZGl2PgogICk7Cn0KCmNvbnN0IHM9ewogIHJvb3Q6e21pbkhlaWdodDonMTAwdmgnLGJhY2tncm91bmQ6J3Ry\
+YW5zcGFyZW50Jyxmb250RmFtaWx5OiInU3BhY2UgR3JvdGVzaycsc2Fucy1zZXJpZiIsY29sb3I6JyNmZmYnLAogICAgZGlzcGxh\
+eTonZmxleCcsZmxleERpcmVjdGlvbjonY29sdW1uJyxwb3NpdGlvbjoncmVsYXRpdmUnfSwKICB0b3BiYXI6e3Bvc2l0aW9uOidy\
+ZWxhdGl2ZScsekluZGV4OjEwLGRpc3BsYXk6J2ZsZXgnLGFsaWduSXRlbXM6J2NlbnRlcicsCiAgICBwYWRkaW5nOicxMnB4IDMy\
+cHgnLGdhcDoxNiwKICAgIGJhY2tncm91bmQ6J3JnYmEoMywzLDgsLjg1KScsYmFja2Ryb3BGaWx0ZXI6J2JsdXIoMjBweCknLAog\
+ICAgYm9yZGVyQm90dG9tOicxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwuMDYpJ30sCiAgYnJhbmQ6e2Rpc3BsYXk6J2ZsZXgn\
+LGFsaWduSXRlbXM6J2NlbnRlcicsZ2FwOjgsZmxleFNocmluazowfSwKICBicmFuZEljb246e2ZvbnRTaXplOjIyLGZpbHRlcjon\
+ZHJvcC1zaGFkb3coMCAwIDEwcHggcmdiYSgyNTUsMjAwLDAsLjgpKSd9LAogIGJyYW5kTmFtZTp7Zm9udFNpemU6MTgsZm9udFdl\
+aWdodDo3MDAsbGV0dGVyU3BhY2luZzonLS41cHgnfSwKICBicmFuZFZlcjp7Zm9udFNpemU6MTAsY29sb3I6J3JnYmEoMjU1LDI1\
+NSwyNTUsLjMpJyxib3JkZXI6JzFweCBzb2xpZCByZ2JhKDI1NSwyNTUsMjU1LC4xKScsCiAgICBwYWRkaW5nOicycHggN3B4Jyxi\
+b3JkZXJSYWRpdXM6NSxmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYifSwKICB0b3BDZW50ZXI6e2ZsZXg6MSxkaXNwbGF5\
+OidmbGV4JyxqdXN0aWZ5Q29udGVudDonY2VudGVyJ30sCiAgYWN0aXZlUGlsbDp7ZGlzcGxheTonZmxleCcsYWxpZ25JdGVtczon\
+Y2VudGVyJyxnYXA6Nyxmb250U2l6ZToxMiwKICAgIGNvbG9yOicjMTBiOTgxJyxiYWNrZ3JvdW5kOidyZ2JhKDE2LDE4NSwxMjks\
+LjEpJyxib3JkZXI6JzFweCBzb2xpZCByZ2JhKDE2LDE4NSwxMjksLjI1KScsCiAgICBwYWRkaW5nOic1cHggMTRweCcsYm9yZGVy\
+UmFkaXVzOjIwLGZvbnRGYW1pbHk6IidJbnRlcicsc2Fucy1zZXJpZiIsZm9udFdlaWdodDo1MDB9LAogIGFjdGl2ZURvdDp7d2lk\
+dGg6NyxoZWlnaHQ6Nyxib3JkZXJSYWRpdXM6JzUwJScsYmFja2dyb3VuZDonIzEwYjk4MScsCiAgICBib3hTaGFkb3c6JzAgMCA4\
+cHggIzEwYjk4MScsYW5pbWF0aW9uOidkb3RQdWxzZSAycyBlYXNlLWluLW91dCBpbmZpbml0ZScsZGlzcGxheTonaW5saW5lLWJs\
+b2NrJ30sCiAgdG9wUmlnaHQ6e2Rpc3BsYXk6J2ZsZXgnLGFsaWduSXRlbXM6J2NlbnRlcicsZ2FwOjE0LGZsZXhTaHJpbms6MH0s\
+CiAgY2xvY2tCb3g6e3RleHRBbGlnbjoncmlnaHQnfSwKICBjbG9ja1RpbWU6e2ZvbnRTaXplOjE4LGZvbnRXZWlnaHQ6NzAwLGxl\
+dHRlclNwYWNpbmc6JzFweCcsbGluZUhlaWdodDoxLjIsCiAgICBmb250VmFyaWFudE51bWVyaWM6J3RhYnVsYXItbnVtcycsYW5p\
+bWF0aW9uOid0aWNrQW5pbSAuMXMgZWFzZSd9LAogIGNsb2NrRGF0ZTp7Zm9udFNpemU6MTAsY29sb3I6J3JnYmEoMjU1LDI1NSwy\
+NTUsLjMpJyxmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYiLAogICAgdGV4dFRyYW5zZm9ybTonY2FwaXRhbGl6ZSd9LAog\
+IGxvZ291dEJ0bjp7YmFja2dyb3VuZDoncmdiYSgyNTUsMjU1LDI1NSwuMDYpJyxib3JkZXI6JzFweCBzb2xpZCByZ2JhKDI1NSwy\
+NTUsMjU1LC4xKScsCiAgICBjb2xvcjoncmdiYSgyNTUsMjU1LDI1NSwuNSknLHdpZHRoOjM0LGhlaWdodDozNCxib3JkZXJSYWRp\
+dXM6OCwKICAgIGN1cnNvcjoncG9pbnRlcicsZm9udFNpemU6MTYsZGlzcGxheTonZmxleCcsYWxpZ25JdGVtczonY2VudGVyJyxq\
+dXN0aWZ5Q29udGVudDonY2VudGVyJywKICAgIHRyYW5zaXRpb246J2FsbCAuMnMnfSwKICBoZXJvOntwb3NpdGlvbjoncmVsYXRp\
+dmUnLHpJbmRleDoxMCxwYWRkaW5nOic3MnB4IDMycHggNDhweCcsdGV4dEFsaWduOidjZW50ZXInfSwKICBoZXJvSW5uZXI6e21h\
+eFdpZHRoOjcwMCxtYXJnaW46JzAgYXV0bycsYW5pbWF0aW9uOidmYWRlVXAgLjZzIGVhc2UnfSwKICBoZXJvVGFnOntmb250U2l6\
+ZToxMixmb250V2VpZ2h0OjYwMCxsZXR0ZXJTcGFjaW5nOicycHgnLHRleHRUcmFuc2Zvcm06J3VwcGVyY2FzZScsCiAgICBjb2xv\
+cjoncmdiYSgyNTUsMjU1LDI1NSwuMyknLG1hcmdpbkJvdHRvbToyMCxmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYifSwK\
+ICBoZXJvVGl0bGU6e2ZvbnRTaXplOidjbGFtcCgzOHB4LDZ2dyw3MnB4KScsZm9udFdlaWdodDo3MDAsbGluZUhlaWdodDoxLjA4\
+LAogICAgbGV0dGVyU3BhY2luZzonLTIuNXB4JyxtYXJnaW5Cb3R0b206MjB9LAogIGhlcm9HcmFkOntiYWNrZ3JvdW5kOidsaW5l\
+YXItZ3JhZGllbnQoMTM1ZGVnLCM4MThjZjggMCUsI2E3OGJmYSAzNSUsIzM4YmRmOCA2NSUsIzM0ZDM5OSAxMDAlKScsCiAgICBi\
+YWNrZ3JvdW5kU2l6ZTonMzAwJSAzMDAlJyxXZWJraXRCYWNrZ3JvdW5kQ2xpcDondGV4dCcsV2Via2l0VGV4dEZpbGxDb2xvcjon\
+dHJhbnNwYXJlbnQnLAogICAgYW5pbWF0aW9uOidncmFkQW5pbSA2cyBlYXNlIGluZmluaXRlJ30sCiAgaGVyb1N1Yjp7Zm9udFNp\
+emU6MTgsbGluZUhlaWdodDoxLjY1LGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC40KScsCiAgICBmb250RmFtaWx5OiInSW50ZXIn\
+LHNhbnMtc2VyaWYiLGZvbnRXZWlnaHQ6NDAwfSwKICBjYXJkc1dyYXA6e3Bvc2l0aW9uOidyZWxhdGl2ZScsekluZGV4OjEwLGZs\
+ZXg6MSxwYWRkaW5nOicwIDI0cHggNDBweCd9LAogIGNhcmRzOnttYXhXaWR0aDoxMTAwLG1hcmdpbjonMCBhdXRvJyxkaXNwbGF5\
+OidncmlkJywKICAgIGdyaWRUZW1wbGF0ZUNvbHVtbnM6J3JlcGVhdChhdXRvLWZpdCxtaW5tYXgoMzAwcHgsMWZyKSknLGdhcDoy\
+MH0sCiAgZm9vdDp7cG9zaXRpb246J3JlbGF0aXZlJyx6SW5kZXg6MTAsZGlzcGxheTonZmxleCcsYWxpZ25JdGVtczonY2VudGVy\
+JyxqdXN0aWZ5Q29udGVudDonY2VudGVyJywKICAgIGdhcDoxMCxwYWRkaW5nOicxNnB4Jyxib3JkZXJUb3A6JzFweCBzb2xpZCBy\
+Z2JhKDI1NSwyNTUsMjU1LC4wNCknfSwKICBmb290SXRlbTp7Zm9udFNpemU6MTEsY29sb3I6J3JnYmEoMjU1LDI1NSwyNTUsLjE1\
+KScsZm9udEZhbWlseToiJ0ludGVyJyxzYW5zLXNlcmlmIn0sCiAgZm9vdERvdDp7Y29sb3I6J3JnYmEoMjU1LDI1NSwyNTUsLjEp\
+J30sCn07Cg==" | base64 -d > /app/frontend/src/components/Dashboard.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/ServiceCard.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUsIHVzZUVmZmVjdCB9IGZyb20gJ3JlYWN0JzsKCmV4cG9ydCBkZWZhdWx0IGZ1bmN0aW9uIFNlcnZp\
+Y2VDYXJkKHsgc2VydmljZTpzdiwgc3RhdHVzLCBsb2FkaW5nLCBvblN0YXJ0LCBvblJlY29ubmVjdCwgb25TdG9wIH0pewogIGNv\
+bnN0IFtob3YsIHNldEhvdl0gICAgID0gdXNlU3RhdGUoZmFsc2UpOwogIGNvbnN0IFtlbGFwc2VkLCBzZXRFbF0gID0gdXNlU3Rh\
+dGUoMCk7CiAgY29uc3QgcnVubmluZyA9IHN0YXR1cz8ucnVubmluZzsKCiAgdXNlRWZmZWN0KCgpPT57CiAgICBpZighcnVubmlu\
+Z3x8IXN0YXR1cz8uc3RhcnRUaW1lKSByZXR1cm47CiAgICBjb25zdCB0aWNrPSgpPT5zZXRFbChNYXRoLmZsb29yKChEYXRlLm5v\
+dygpLW5ldyBEYXRlKHN0YXR1cy5zdGFydFRpbWUpKS8xMDAwKSk7CiAgICB0aWNrKCk7IGNvbnN0IGlkPXNldEludGVydmFsKHRp\
+Y2ssMTAwMCk7IHJldHVybigpPT5jbGVhckludGVydmFsKGlkKTsKICB9LFtydW5uaW5nLHN0YXR1cz8uc3RhcnRUaW1lXSk7Cgog\
+IGNvbnN0IGZtdD1zPT57CiAgICBjb25zdCBoPU1hdGguZmxvb3Iocy8zNjAwKSxtPU1hdGguZmxvb3IoKHMlMzYwMCkvNjApLHNl\
+Yz1zJTYwOwogICAgcmV0dXJuIGg+MD9gJHtofToke3AobSl9OiR7cChzZWMpfWA6YCR7cChtKX06JHtwKHNlYyl9YDsKICB9Owog\
+IGNvbnN0IHA9bj0+U3RyaW5nKG4pLnBhZFN0YXJ0KDIsJzAnKTsKCiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3sKICAgICAg\
+Li4uY2FyZCwKICAgICAgYm9yZGVyQ29sb3I6IHJ1bm5pbmc/YCR7c3YuYWNjZW50fTUwYDpob3Y/J3JnYmEoMjU1LDI1NSwyNTUs\
+LjE0KSc6J3JnYmEoMjU1LDI1NSwyNTUsLjA3KScsCiAgICAgIGJhY2tncm91bmQ6ICBydW5uaW5nP2Ake3N2LmFjY2VudH0wY2A6\
+aG92PydyZ2JhKDI1NSwyNTUsMjU1LC4wNiknOidyZ2JhKDI1NSwyNTUsMjU1LC4wMyknLAogICAgICB0cmFuc2Zvcm06ICAgaG92\
+JiYhbG9hZGluZz8ndHJhbnNsYXRlWSgtNnB4KSc6J25vbmUnLAogICAgICBib3hTaGFkb3c6ICAgcnVubmluZwogICAgICAgID9g\
+MCAwIDAgMXB4ICR7c3YuYWNjZW50fTI1IGluc2V0LCAwIDI0cHggNjRweCAke3N2LmFjY2VudH0xOGAKICAgICAgICA6aG92Pycw\
+IDI0cHggNDhweCByZ2JhKDAsMCwwLC4zNSknOicwIDRweCAyMHB4IHJnYmEoMCwwLDAsLjIpJywKICAgIH19CiAgICBvbk1vdXNl\
+RW50ZXI9eygpPT5zZXRIb3YodHJ1ZSl9IG9uTW91c2VMZWF2ZT17KCk9PnNldEhvdihmYWxzZSl9PgoKICAgICAgey8qIFRvcCBh\
+Y2NlbnQgbGluZSAqL30KICAgICAgPGRpdiBzdHlsZT17ey4uLnRvcExpbmUsIGJhY2tncm91bmQ6c3YuZywgb3BhY2l0eTpydW5u\
+aW5nPzE6aG92Py43Oi4zNX19Lz4KCiAgICAgIHsvKiBHbG93IGJsb2IgKi99CiAgICAgIDxkaXYgc3R5bGU9e3twb3NpdGlvbjon\
+YWJzb2x1dGUnLGluc2V0Oi04MCxib3JkZXJSYWRpdXM6JzUwJScsCiAgICAgICAgYmFja2dyb3VuZDpzdi5nbG93LGZpbHRlcjon\
+Ymx1cigxMDBweCknLG9wYWNpdHk6cnVubmluZz8uMzpob3Y/LjE1Oi4wNSwKICAgICAgICBwb2ludGVyRXZlbnRzOidub25lJyx0\
+cmFuc2l0aW9uOidvcGFjaXR5IC4zcyd9fS8+CgogICAgICB7LyogU3RhdHVzICovfQogICAgICA8ZGl2IHN0eWxlPXt7Li4uYmFk\
+Z2UsIGJhY2tncm91bmQ6cnVubmluZz9gJHtzdi5hY2NlbnR9MThgOidyZ2JhKDI1NSwyNTUsMjU1LC4wNSknLAogICAgICAgIGJv\
+cmRlckNvbG9yOnJ1bm5pbmc/YCR7c3YuYWNjZW50fTQwYDoncmdiYSgyNTUsMjU1LDI1NSwuMDkpJywKICAgICAgICBjb2xvcjpy\
+dW5uaW5nP3N2LmFjY2VudDoncmdiYSgyNTUsMjU1LDI1NSwuMzUpJ319PgogICAgICAgIDxzcGFuIHN0eWxlPXt7d2lkdGg6Nixo\
+ZWlnaHQ6Nixib3JkZXJSYWRpdXM6JzUwJScsYmFja2dyb3VuZDpydW5uaW5nP3N2LmFjY2VudDoncmdiYSgyNTUsMjU1LDI1NSwu\
+MjUpJywKICAgICAgICAgIGRpc3BsYXk6J2lubGluZS1ibG9jaycsYm94U2hhZG93OnJ1bm5pbmc/YDAgMCA4cHggJHtzdi5hY2Nl\
+bnR9YDonbm9uZScsCiAgICAgICAgICBhbmltYXRpb246cnVubmluZz8nYmxpbmsgMnMgZWFzZSBpbmZpbml0ZSc6J25vbmUnfX0v\
+PgogICAgICAgIHtydW5uaW5nPyfQkNC60YLQuNCy0L3QsCc6J9Ce0YfRltC60YPRlCd9CiAgICAgIDwvZGl2PgoKICAgICAgey8q\
+IEljb24gKi99CiAgICAgIDxkaXYgc3R5bGU9e2ljb25XcmFwfT57c3YuaWNvbn08L2Rpdj4KCiAgICAgIHsvKiBUZXh0ICovfQog\
+ICAgICA8aDMgc3R5bGU9e3RpdGxlfT57c3YubGFiZWx9PC9oMz4KICAgICAgPHAgc3R5bGU9e2Rlc2N9Pntzdi5kZXNjfTwvcD4K\
+CiAgICAgIHsvKiBUaW1lciAqL30KICAgICAge3J1bm5pbmcgJiYgKAogICAgICAgIDxkaXYgc3R5bGU9e3RpbWVyfT4KICAgICAg\
+ICAgIDxzcGFuPuKPsTwvc3Bhbj4KICAgICAgICAgIDxzcGFuIHN0eWxlPXt7Zm9udFZhcmlhbnROdW1lcmljOid0YWJ1bGFyLW51\
+bXMnLGxldHRlclNwYWNpbmc6Jy41cHgnfX0+e2ZtdChlbGFwc2VkKX08L3NwYW4+CiAgICAgICAgPC9kaXY+CiAgICAgICl9Cgog\
+ICAgICB7LyogQnV0dG9ucyAqL30KICAgICAgPGRpdiBzdHlsZT17YnRuUm93fT4KICAgICAgICB7cnVubmluZyA/ICgKICAgICAg\
+ICAgIDw+CiAgICAgICAgICAgIDxidXR0b24gc3R5bGU9e3suLi5idG4sYmFja2dyb3VuZDpzdi5nLGJvcmRlcjonbm9uZScsCiAg\
+ICAgICAgICAgICAgYm94U2hhZG93OmAwIDRweCAyMHB4ICR7c3YuYWNjZW50fTQwYCxmbGV4OjF9fQogICAgICAgICAgICAgIG9u\
+Q2xpY2s9e29uUmVjb25uZWN0fT7ilrYg0J/RltC00LrQu9GO0YfQuNGC0LjRgdGMPC9idXR0b24+CiAgICAgICAgICAgIDxidXR0\
+b24gc3R5bGU9e3suLi5idG4sYmFja2dyb3VuZDoncmdiYSgyMzksNjgsNjgsLjEyKScsCiAgICAgICAgICAgICAgYm9yZGVyQ29s\
+b3I6J3JnYmEoMjM5LDY4LDY4LC4zKScsY29sb3I6JyNmODcxNzEnLHdpZHRoOjQyfX0KICAgICAgICAgICAgICBvbkNsaWNrPXtv\
+blN0b3B9IHRpdGxlPSLQl9GD0L/QuNC90LjRgtC4Ij7ij7k8L2J1dHRvbj4KICAgICAgICAgIDwvPgogICAgICAgICk6KAogICAg\
+ICAgICAgPGJ1dHRvbiBzdHlsZT17ey4uLmJ0biwgZmxleDoxLAogICAgICAgICAgICBiYWNrZ3JvdW5kOmhvdj9gJHtzdi5hY2Nl\
+bnR9MjBgOidyZ2JhKDI1NSwyNTUsMjU1LC4wNiknLAogICAgICAgICAgICBib3JkZXJDb2xvcjpob3Y/YCR7c3YuYWNjZW50fTUw\
+YDoncmdiYSgyNTUsMjU1LDI1NSwuMSknLAogICAgICAgICAgICBjdXJzb3I6bG9hZGluZz8nd2FpdCc6J3BvaW50ZXInLCBvcGFj\
+aXR5OmxvYWRpbmc/Ljc6MX19CiAgICAgICAgICAgIG9uQ2xpY2s9e29uU3RhcnR9IGRpc2FibGVkPXtsb2FkaW5nfT4KICAgICAg\
+ICAgICAge2xvYWRpbmcKICAgICAgICAgICAgICA/PD48c3BhbiBzdHlsZT17c3Bpbn0vPtCX0LDQv9GD0YHQutCw0ZTQvNC+Li4u\
+PC8+CiAgICAgICAgICAgICAgOiA8PvCfmoAg0JfQsNC/0YPRgdGC0LjRgtC4PC8+fQogICAgICAgICAgPC9idXR0b24+CiAgICAg\
+ICAgKX0KICAgICAgPC9kaXY+CgogICAgICA8c3R5bGU+e2AKICAgICAgICBAa2V5ZnJhbWVzIGJsaW5rezAlLDEwMCV7b3BhY2l0\
+eToxfTUwJXtvcGFjaXR5Oi40fX0KICAgICAgICBAa2V5ZnJhbWVzIHNwe3Rve3RyYW5zZm9ybTpyb3RhdGUoMzYwZGVnKX19CiAg\
+ICAgIGB9PC9zdHlsZT4KICAgIDwvZGl2PgogICk7Cn0KCmNvbnN0IGNhcmQ9e3Bvc2l0aW9uOidyZWxhdGl2ZScsYm9yZGVyUmFk\
+aXVzOjIwLHBhZGRpbmc6JzI0cHggMjJweCAyMHB4JywKICBib3JkZXI6JzFweCBzb2xpZCcsb3ZlcmZsb3c6J2hpZGRlbicsZGlz\
+cGxheTonZmxleCcsZmxleERpcmVjdGlvbjonY29sdW1uJyxnYXA6MTAsCiAgdHJhbnNpdGlvbjonYWxsIC4yOHMgY3ViaWMtYmV6\
+aWVyKC40LDAsLjIsMSknLGJhY2tkcm9wRmlsdGVyOidibHVyKDE2cHgpJywKICBmb250RmFtaWx5OiInU3BhY2UgR3JvdGVzaycs\
+c2Fucy1zZXJpZiJ9Owpjb25zdCB0b3BMaW5lPXtwb3NpdGlvbjonYWJzb2x1dGUnLHRvcDowLGxlZnQ6MCxyaWdodDowLGhlaWdo\
+dDoyLHRyYW5zaXRpb246J29wYWNpdHkgLjNzJ307CmNvbnN0IGJhZGdlPXtwb3NpdGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGFs\
+aWduU2VsZjonZmxleC1zdGFydCcsZGlzcGxheTonZmxleCcsCiAgYWxpZ25JdGVtczonY2VudGVyJyxnYXA6Nixmb250U2l6ZTox\
+MSxmb250V2VpZ2h0OjYwMCxsZXR0ZXJTcGFjaW5nOicuOHB4JywKICB0ZXh0VHJhbnNmb3JtOid1cHBlcmNhc2UnLGJvcmRlcjon\
+MXB4IHNvbGlkJyxwYWRkaW5nOiczcHggMTBweCcsYm9yZGVyUmFkaXVzOjYsCiAgZm9udEZhbWlseToiJ0ludGVyJyxzYW5zLXNl\
+cmlmIn07CmNvbnN0IGljb25XcmFwPXtwb3NpdGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGZvbnRTaXplOjQ0LGxpbmVIZWlnaHQ6\
+MSxtYXJnaW5Ub3A6NH07CmNvbnN0IHRpdGxlPXtwb3NpdGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGZvbnRTaXplOjIxLGZvbnRX\
+ZWlnaHQ6NzAwLAogIGxldHRlclNwYWNpbmc6Jy0uNXB4Jyxjb2xvcjonI2ZmZicsbWFyZ2luOjB9Owpjb25zdCBkZXNjPXtwb3Np\
+dGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGZvbnRTaXplOjEzLGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC40NSknLAogIGxpbmVI\
+ZWlnaHQ6MS42LG1hcmdpbjowLGZvbnRGYW1pbHk6IidJbnRlcicsc2Fucy1zZXJpZiIsZmxleEdyb3c6MX07CmNvbnN0IHRpbWVy\
+PXtwb3NpdGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGRpc3BsYXk6J2ZsZXgnLGFsaWduSXRlbXM6J2NlbnRlcicsZ2FwOjYsCiAg\
+Zm9udFNpemU6MTMsY29sb3I6J3JnYmEoMjU1LDI1NSwyNTUsLjUpJyxmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYifTsK\
+Y29uc3QgYnRuUm93PXtwb3NpdGlvbjoncmVsYXRpdmUnLHpJbmRleDoxLGRpc3BsYXk6J2ZsZXgnLGdhcDo4LG1hcmdpblRvcDo0\
+fTsKY29uc3QgYnRuPXtkaXNwbGF5OidmbGV4JyxhbGlnbkl0ZW1zOidjZW50ZXInLGp1c3RpZnlDb250ZW50OidjZW50ZXInLGdh\
+cDo3LAogIHBhZGRpbmc6JzEycHggMTZweCcsYm9yZGVyUmFkaXVzOjEwLGZvbnRTaXplOjEzLGZvbnRXZWlnaHQ6NjAwLAogIGZv\
+bnRGYW1pbHk6IidTcGFjZSBHcm90ZXNrJyxzYW5zLXNlcmlmIixib3JkZXI6JzFweCBzb2xpZCcsCiAgY29sb3I6JyNmZmYnLHRy\
+YW5zaXRpb246J2FsbCAuMnMnLGN1cnNvcjoncG9pbnRlcid9Owpjb25zdCBzcGluPXtkaXNwbGF5OidpbmxpbmUtYmxvY2snLHdp\
+ZHRoOjEzLGhlaWdodDoxMywKICBib3JkZXI6JzJweCBzb2xpZCByZ2JhKDI1NSwyNTUsMjU1LC4yKScsYm9yZGVyVG9wQ29sb3I6\
+JyNmZmYnLAogIGJvcmRlclJhZGl1czonNTAlJyxhbmltYXRpb246J3NwIC43cyBsaW5lYXIgaW5maW5pdGUnfTsK" | base64 -d > /app/frontend/src/components/ServiceCard.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/SessionViewer.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUsIHVzZUNhbGxiYWNrLCB1c2VSZWYsIHVzZUVmZmVjdCB9IGZyb20gJ3JlYWN0JzsKCmNvbnN0IE1F\
+VEEgPSB7CiAgYnJvd3NlcjogeyBpY29uOifwn4yQJywgbmFtZTonQ2xvdWQgQnJvd3NlcicsIHN1YjonQ2hyb21lJywgYm9vdDoy\
+MCB9LAogIGRlc2t0b3A6IHsgaWNvbjon8J+Wpe+4jycsIG5hbWU6J0Nsb3VkIFBDJywgc3ViOidDaW5uYW1vbiBMaW51eCcsIGJv\
+b3Q6MzUgfSwKICBwaG9uZTogICB7IGljb246J/Cfk7EnLCBuYW1lOidDbG91ZCBQaG9uZScsIHN1YjonQW5kcm9pZCBVSScsIGJv\
+b3Q6MTUgfSwKfTsKCmV4cG9ydCBkZWZhdWx0IGZ1bmN0aW9uIFNlc3Npb25WaWV3ZXIoeyB0eXBlLCB1cmwsIG9uQmFjayB9KXsK\
+ICBjb25zdCBbbG9hZGVkLCBzZXRMb2FkZWRdICAgICAgICAgPSB1c2VTdGF0ZShmYWxzZSk7CiAgY29uc3QgW2NvdW50ZG93biwg\
+c2V0Q291bnRkb3duXSAgID0gdXNlU3RhdGUoTUVUQVt0eXBlXT8uYm9vdHx8MjUpOwogIGNvbnN0IFtyZXRyaWVzLCBzZXRSZXRy\
+aWVzXSAgICAgICA9IHVzZVN0YXRlKDApOwogIGNvbnN0IGlmcmFtZVJlZiA9IHVzZVJlZihudWxsKTsKICBjb25zdCBtZXRhID0g\
+TUVUQVt0eXBlXXx8TUVUQS5icm93c2VyOwoKICB1c2VFZmZlY3QoKCk9PnsKICAgIGlmKGxvYWRlZCkgcmV0dXJuOwogICAgY29u\
+c3QgaWQ9c2V0SW50ZXJ2YWwoKCk9PnNldENvdW50ZG93bihjPT5jPjA/Yy0xOjApLDEwMDApOwogICAgcmV0dXJuKCk9PmNsZWFy\
+SW50ZXJ2YWwoaWQpOwogIH0sW2xvYWRlZF0pOwoKICBjb25zdCBoYW5kbGVMb2FkID0gdXNlQ2FsbGJhY2soKCk9PnNldExvYWRl\
+ZCh0cnVlKSxbXSk7CgogIGNvbnN0IHJldHJ5PSgpPT57CiAgICBzZXRMb2FkZWQoZmFsc2UpOwogICAgc2V0Q291bnRkb3duKE1F\
+VEFbdHlwZV0/LmJvb3R8fDI1KTsKICAgIHNldFJldHJpZXMocj0+cisxKTsKICAgIGlmKGlmcmFtZVJlZi5jdXJyZW50KXsKICAg\
+ICAgY29uc3Qgc3JjPWlmcmFtZVJlZi5jdXJyZW50LnNyYzsKICAgICAgaWZyYW1lUmVmLmN1cnJlbnQuc3JjPScnOwogICAgICBz\
+ZXRUaW1lb3V0KCgpPT57IGlmKGlmcmFtZVJlZi5jdXJyZW50KSBpZnJhbWVSZWYuY3VycmVudC5zcmM9c3JjOyB9LDQwMCk7CiAg\
+ICB9CiAgfTsKCiAgLy8g0JLRltC00LrRgNC40LLQsNGU0LzQviBub1ZOQyDQsiDQvdC+0LLRltC5INCy0LrQu9Cw0LTRhtGWIOKA\
+lCDQv9C+0LLQvdC40Lkg0LXQutGA0LDQvSDQvdCwINGC0LXQu9C10YTQvtC90ZYKICBjb25zdCBvcGVuVGFiPSgpPT57CiAgICBp\
+Zih2bmNVcmwpIHdpbmRvdy5vcGVuKHZuY1VybCwnX2JsYW5rJyk7CiAgfTsKCiAgY29uc3QgZnVsbHNjcmVlbj0oKT0+ewogICAg\
+aWYoaWZyYW1lUmVmLmN1cnJlbnQ/LnJlcXVlc3RGdWxsc2NyZWVuKSBpZnJhbWVSZWYuY3VycmVudC5yZXF1ZXN0RnVsbHNjcmVl\
+bigpOwogICAgZWxzZSBvcGVuVGFiKCk7CiAgfTsKCiAgLy8gcmVzaXplPXNjYWxlIOKAlCDQtNC10YHQutGC0L7QvyDQv9GW0LTR\
+gdGC0YDQvtGO0ZTRgtGM0YHRjyDQv9GW0LQg0YDQvtC30LzRltGAINC10LrRgNCw0L3RgwogIGNvbnN0IHZuY1VybCA9IHVybAog\
+ICAgPyBgJHt1cmx9JnJlc2l6ZT1zY2FsZSZxdWFsaXR5PTcmY29tcHJlc3Npb249MiZyZWNvbm5lY3RfZGVsYXk9MzAwMCZiZWxs\
+PTBgCiAgICA6IG51bGw7CgogIHJldHVybiAoCiAgICA8ZGl2IHN0eWxlPXtzLnJvb3R9PgogICAgICB7LyogVG9vbGJhciAqL30K\
+ICAgICAgPGRpdiBzdHlsZT17cy5iYXJ9PgogICAgICAgIDxidXR0b24gc3R5bGU9e3MuYmFja0J0bn0gb25DbGljaz17b25CYWNr\
+fT7ihpAg0J3QsNC30LDQtDwvYnV0dG9uPgogICAgICAgIDxkaXYgc3R5bGU9e3MuaW5mb30+CiAgICAgICAgICA8c3BhbiBzdHls\
+ZT17e2ZvbnRTaXplOjE4fX0+e21ldGEuaWNvbn08L3NwYW4+CiAgICAgICAgICA8ZGl2PgogICAgICAgICAgICA8ZGl2IHN0eWxl\
+PXtzLm5hbWV9PnttZXRhLm5hbWV9PC9kaXY+CiAgICAgICAgICAgIDxkaXYgc3R5bGU9e3Muc3VifT57bWV0YS5zdWJ9PC9kaXY+\
+CiAgICAgICAgICA8L2Rpdj4KICAgICAgICA8L2Rpdj4KICAgICAgICA8ZGl2IHN0eWxlPXt7Li4ucy5kb3Rfd3JhcCwgY29sb3I6\
+bG9hZGVkPycjMTBiOTgxJzonI2Y1OWUwYid9fT4KICAgICAgICAgIDxzcGFuIHN0eWxlPXt7Li4ucy5kb3QsYmFja2dyb3VuZDps\
+b2FkZWQ/JyMxMGI5ODEnOicjZjU5ZTBiJ319Lz4KICAgICAgICAgIHtsb2FkZWQ/J9CQ0LrRgtC40LLQvdCwJzon0JfQsNC/0YPR\
+gdC6Li4uJ30KICAgICAgICA8L2Rpdj4KICAgICAgPC9kaXY+CgogICAgICB7LyogQWN0aW9uIGJ1dHRvbnMgKi99CiAgICAgIDxk\
+aXYgc3R5bGU9e3MuYWN0aW9uc30+CiAgICAgICAgPGJ1dHRvbiBzdHlsZT17cy5hY3RCdG59IG9uQ2xpY2s9e3JldHJ5fT7ihrog\
+0J/QtdGA0LXQv9GW0LTQutC70Y7Rh9C40YLQuDwvYnV0dG9uPgogICAgICAgIDxidXR0b24gc3R5bGU9e3suLi5zLmFjdEJ0biwu\
+Li5zLmFjdEJ0blByaW1hcnl9fSBvbkNsaWNrPXtvcGVuVGFifT4KICAgICAgICAgIOKbtiDQktGW0LTQutGA0LjRgtC4INC90LAg\
+0L/QvtCy0L3QuNC5INC10LrRgNCw0L0KICAgICAgICA8L2J1dHRvbj4KICAgICAgICA8YnV0dG9uIHN0eWxlPXtzLmFjdEJ0bn0g\
+b25DbGljaz17ZnVsbHNjcmVlbn0+8J+TsSBGdWxsc2NyZWVuPC9idXR0b24+CiAgICAgIDwvZGl2PgoKICAgICAgey8qIENvbnRl\
+bnQgKi99CiAgICAgIDxkaXYgc3R5bGU9e3MuY29udGVudH0+CiAgICAgICAgeyFsb2FkZWQmJigKICAgICAgICAgIDxkaXYgc3R5\
+bGU9e3Mub3ZlcmxheX0+CiAgICAgICAgICAgIDxkaXYgc3R5bGU9e3MuY2FyZH0+CiAgICAgICAgICAgICAgPGRpdiBzdHlsZT17\
+e2ZvbnRTaXplOjUyfX0+e21ldGEuaWNvbn08L2Rpdj4KICAgICAgICAgICAgICA8ZGl2IHN0eWxlPXtzLnNwaW5uZXJ9Lz4KICAg\
+ICAgICAgICAgICA8cCBzdHlsZT17cy5sdH0+0JfQsNC/0YPRgdC60LDRlNC80L4ge21ldGEubmFtZX0uLi48L3A+CiAgICAgICAg\
+ICAgICAge2NvdW50ZG93bj4wCiAgICAgICAgICAgICAgICA/PGRpdiBzdHlsZT17cy5jd30+CiAgICAgICAgICAgICAgICAgIDxk\
+aXYgc3R5bGU9e3MuY259Pntjb3VudGRvd259PC9kaXY+CiAgICAgICAgICAgICAgICAgIDxkaXYgc3R5bGU9e3MuY3N9PtGB0LXQ\
+utGD0L3QtDwvZGl2PgogICAgICAgICAgICAgICAgPC9kaXY+CiAgICAgICAgICAgICAgICA6PHAgc3R5bGU9e3MuY3N9PtCc0LDQ\
+udC20LUg0LPQvtGC0L7QstC+Li4uPC9wPn0KICAgICAgICAgICAgICA8ZGl2IHN0eWxlPXtzLnBifT4KICAgICAgICAgICAgICAg\
+IDxkaXYgc3R5bGU9e3suLi5zLnBmLAogICAgICAgICAgICAgICAgICB3aWR0aDpgJHtNYXRoLm1heCg1LDEwMC0oY291bnRkb3du\
+LyhtZXRhLmJvb3R8fDI1KSkqMTAwKX0lYH19Lz4KICAgICAgICAgICAgICA8L2Rpdj4KICAgICAgICAgICAgICA8cCBzdHlsZT17\
+cy5oaW50fT4KICAgICAgICAgICAgICAgIPCfkqEg0JTQu9GPINC60YDQsNGJ0L7Qs9C+INC00L7RgdCy0ZbQtNGDINC90LDRgtC4\
+0YHQvdC4PGJyLz4KICAgICAgICAgICAgICAgIDxiPiLQktGW0LTQutGA0LjRgtC4INC90LAg0L/QvtCy0L3QuNC5INC10LrRgNCw\
+0L0iPC9iPgogICAgICAgICAgICAgIDwvcD4KICAgICAgICAgICAgICA8YnV0dG9uIHN0eWxlPXtzLnJldHJ5QnRufSBvbkNsaWNr\
+PXtvcGVuVGFifT4KICAgICAgICAgICAgICAgIOKbtiDQktGW0LTQutGA0LjRgtC4INC90LAg0L/QvtCy0L3QuNC5INC10LrRgNCw\
+0L0KICAgICAgICAgICAgICA8L2J1dHRvbj4KICAgICAgICAgICAgPC9kaXY+CiAgICAgICAgICA8L2Rpdj4KICAgICAgICApfQog\
+ICAgICAgIHt2bmNVcmwmJigKICAgICAgICAgIDxpZnJhbWUgcmVmPXtpZnJhbWVSZWZ9IGtleT17cmV0cmllc30gc3JjPXt2bmNV\
+cmx9CiAgICAgICAgICAgIHN0eWxlPXt7Li4ucy5mcmFtZSwgb3BhY2l0eTpsb2FkZWQ/MTowfX0KICAgICAgICAgICAgb25Mb2Fk\
+PXtoYW5kbGVMb2FkfQogICAgICAgICAgICBhbGxvdz0iY2xpcGJvYXJkLXJlYWQ7IGNsaXBib2FyZC13cml0ZTsgZnVsbHNjcmVl\
+biIKICAgICAgICAgICAgdGl0bGU9e21ldGEubmFtZX0vPgogICAgICAgICl9CiAgICAgIDwvZGl2PgogICAgICA8c3R5bGU+e2AK\
+ICAgICAgICBAa2V5ZnJhbWVzIHNwe3Rve3RyYW5zZm9ybTpyb3RhdGUoMzYwZGVnKX19CiAgICAgIGB9PC9zdHlsZT4KICAgIDwv\
+ZGl2PgogICk7Cn0KCmNvbnN0IHM9ewogIHJvb3Q6e2Rpc3BsYXk6J2ZsZXgnLGZsZXhEaXJlY3Rpb246J2NvbHVtbicsaGVpZ2h0\
+OicxMDB2aCcsYmFja2dyb3VuZDonIzAzMDMwOCcsCiAgICBmb250RmFtaWx5OiInU3BhY2UgR3JvdGVzaycsc2Fucy1zZXJpZiIs\
+Y29sb3I6JyNmZmYnfSwKICBiYXI6e2Rpc3BsYXk6J2ZsZXgnLGFsaWduSXRlbXM6J2NlbnRlcicsZ2FwOjgscGFkZGluZzonMTBw\
+eCAxNHB4JywKICAgIGJhY2tncm91bmQ6J3JnYmEoMjU1LDI1NSwyNTUsLjA0KScsYm9yZGVyQm90dG9tOicxcHggc29saWQgcmdi\
+YSgyNTUsMjU1LDI1NSwuMDcpJywKICAgIGZsZXhTaHJpbms6MH0sCiAgYmFja0J0bjp7YmFja2dyb3VuZDoncmdiYSgyNTUsMjU1\
+LDI1NSwuMDcpJyxib3JkZXI6JzFweCBzb2xpZCByZ2JhKDI1NSwyNTUsMjU1LC4xKScsCiAgICBjb2xvcjonI2ZmZicscGFkZGlu\
+ZzonOHB4IDE0cHgnLGJvcmRlclJhZGl1czo4LGN1cnNvcjoncG9pbnRlcicsZm9udFNpemU6MTQsCiAgICBmb250RmFtaWx5OiIn\
+U3BhY2UgR3JvdGVzaycsc2Fucy1zZXJpZiIsZmxleFNocmluazowfSwKICBpbmZvOntmbGV4OjEsZGlzcGxheTonZmxleCcsYWxp\
+Z25JdGVtczonY2VudGVyJyxnYXA6OH0sCiAgbmFtZTp7Zm9udFNpemU6MTMsZm9udFdlaWdodDo2MDB9LAogIHN1Yjp7Zm9udFNp\
+emU6MTAsY29sb3I6J3JnYmEoMjU1LDI1NSwyNTUsLjM1KSd9LAogIGRvdF93cmFwOntkaXNwbGF5OidmbGV4JyxhbGlnbkl0ZW1z\
+OidjZW50ZXInLGdhcDo2LGZvbnRTaXplOjExLGZsZXhTaHJpbms6MH0sCiAgZG90OntkaXNwbGF5OidpbmxpbmUtYmxvY2snLHdp\
+ZHRoOjcsaGVpZ2h0OjcsYm9yZGVyUmFkaXVzOic1MCUnfSwKICBhY3Rpb25zOntkaXNwbGF5OidmbGV4JyxnYXA6OCxwYWRkaW5n\
+Oic4cHggMTRweCcsCiAgICBiYWNrZ3JvdW5kOidyZ2JhKDI1NSwyNTUsMjU1LC4wMiknLGJvcmRlckJvdHRvbTonMXB4IHNvbGlk\
+IHJnYmEoMjU1LDI1NSwyNTUsLjA2KScsCiAgICBmbGV4U2hyaW5rOjAsZmxleFdyYXA6J3dyYXAnfSwKICBhY3RCdG46e2JhY2tn\
+cm91bmQ6J3JnYmEoMjU1LDI1NSwyNTUsLjA3KScsYm9yZGVyOicxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwuMTIpJywKICAg\
+IGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC44KScscGFkZGluZzonOXB4IDE0cHgnLGJvcmRlclJhZGl1czo4LGN1cnNvcjoncG9p\
+bnRlcicsCiAgICBmb250U2l6ZToxMyxmb250V2VpZ2h0OjUwMCxmb250RmFtaWx5OiInU3BhY2UgR3JvdGVzaycsc2Fucy1zZXJp\
+ZiIsd2hpdGVTcGFjZTonbm93cmFwJ30sCiAgYWN0QnRuUHJpbWFyeTp7YmFja2dyb3VuZDoncmdiYSg3OSw3MCwyMjksLjI1KScs\
+Ym9yZGVyQ29sb3I6J3JnYmEoNzksNzAsMjI5LC41KScsCiAgICBjb2xvcjonIzgxOGNmOCcsZm9udFdlaWdodDo3MDB9LAogIGNv\
+bnRlbnQ6e2ZsZXg6MSxwb3NpdGlvbjoncmVsYXRpdmUnLG92ZXJmbG93OidoaWRkZW4nfSwKICBvdmVybGF5Ontwb3NpdGlvbjon\
+YWJzb2x1dGUnLGluc2V0OjAsekluZGV4OjEwLGJhY2tncm91bmQ6JyMwMzAzMDgnLAogICAgZGlzcGxheTonZmxleCcsYWxpZ25J\
+dGVtczonY2VudGVyJyxqdXN0aWZ5Q29udGVudDonY2VudGVyJyxwYWRkaW5nOjE2fSwKICBjYXJkOntkaXNwbGF5OidmbGV4Jyxm\
+bGV4RGlyZWN0aW9uOidjb2x1bW4nLGFsaWduSXRlbXM6J2NlbnRlcicsZ2FwOjE0LAogICAgcGFkZGluZzonMzJweCAyNHB4Jyxi\
+YWNrZ3JvdW5kOidyZ2JhKDI1NSwyNTUsMjU1LC4wNCknLAogICAgYm9yZGVyOicxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwu\
+MDgpJyxib3JkZXJSYWRpdXM6MjAsCiAgICBtYXhXaWR0aDozMjAsd2lkdGg6JzEwMCUnLHRleHRBbGlnbjonY2VudGVyJ30sCiAg\
+c3Bpbm5lcjp7d2lkdGg6NDAsaGVpZ2h0OjQwLGJvcmRlcjonM3B4IHNvbGlkIHJnYmEoMjU1LDI1NSwyNTUsLjA4KScsCiAgICBi\
+b3JkZXJUb3BDb2xvcjonIzgxOGNmOCcsYm9yZGVyUmFkaXVzOic1MCUnLGFuaW1hdGlvbjonc3AgLjlzIGxpbmVhciBpbmZpbml0\
+ZSd9LAogIGx0Ontmb250U2l6ZToxNixmb250V2VpZ2h0OjYwMCxjb2xvcjoncmdiYSgyNTUsMjU1LDI1NSwuODUpJ30sCiAgY3c6\
+e2Rpc3BsYXk6J2ZsZXgnLGZsZXhEaXJlY3Rpb246J2NvbHVtbicsYWxpZ25JdGVtczonY2VudGVyJyxnYXA6Mn0sCiAgY246e2Zv\
+bnRTaXplOjQ4LGZvbnRXZWlnaHQ6NzAwLGNvbG9yOicjODE4Y2Y4JyxsaW5lSGVpZ2h0OjF9LAogIGNzOntmb250U2l6ZToxMixj\
+b2xvcjoncmdiYSgyNTUsMjU1LDI1NSwuMyknfSwKICBwYjp7d2lkdGg6JzEwMCUnLGhlaWdodDozLGJhY2tncm91bmQ6J3JnYmEo\
+MjU1LDI1NSwyNTUsLjA4KScsYm9yZGVyUmFkaXVzOjIsb3ZlcmZsb3c6J2hpZGRlbid9LAogIHBmOntoZWlnaHQ6JzEwMCUnLGJh\
+Y2tncm91bmQ6J2xpbmVhci1ncmFkaWVudCg5MGRlZywjNGY0NmU1LCM4MThjZjgpJywKICAgIGJvcmRlclJhZGl1czoyLHRyYW5z\
+aXRpb246J3dpZHRoIDFzIGxpbmVhcid9LAogIGhpbnQ6e2ZvbnRTaXplOjEyLGNvbG9yOidyZ2JhKDI1NSwyNTUsMjU1LC4zNSkn\
+LGxpbmVIZWlnaHQ6MS42fSwKICByZXRyeUJ0bjp7YmFja2dyb3VuZDoncmdiYSg3OSw3MCwyMjksLjIpJyxib3JkZXI6JzFweCBz\
+b2xpZCByZ2JhKDc5LDcwLDIyOSwuNCknLAogICAgY29sb3I6JyM4MThjZjgnLHBhZGRpbmc6JzEwcHggMjBweCcsYm9yZGVyUmFk\
+aXVzOjEwLGN1cnNvcjoncG9pbnRlcicsCiAgICBmb250U2l6ZToxNCxmb250V2VpZ2h0OjcwMCxmb250RmFtaWx5OiInU3BhY2Ug\
+R3JvdGVzaycsc2Fucy1zZXJpZiIsd2lkdGg6JzEwMCUnfSwKICBmcmFtZTp7cG9zaXRpb246J2Fic29sdXRlJyxpbnNldDowLHdp\
+ZHRoOicxMDAlJyxoZWlnaHQ6JzEwMCUnLAogICAgYm9yZGVyOidub25lJyx0cmFuc2l0aW9uOidvcGFjaXR5IC41cyBlYXNlJ30s\
+Cn07Cg==" | base64 -d > /app/frontend/src/components/SessionViewer.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/Toast.jsx) && echo "aW1wb3J0IHsgdXNlRWZmZWN0LCB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0JzsKCmNvbnN0IENPTE9SUyA9IHsKICBzdWNjZXNzOiB7\
+IGJnOidyZ2JhKDE2LDE4NSwxMjksLjE1KScsIGJvcmRlcjoncmdiYSgxNiwxODUsMTI5LC4zNSknLCBpY29uOifinIUnIH0sCiAg\
+ZXJyb3I6ICAgeyBiZzoncmdiYSgyMzksNjgsNjgsLjE1KScsICBib3JkZXI6J3JnYmEoMjM5LDY4LDY4LC4zNSknLCAgaWNvbjon\
+4p2MJyB9LAogIGluZm86ICAgIHsgYmc6J3JnYmEoOTksMTAyLDI0MSwuMTUpJywgYm9yZGVyOidyZ2JhKDk5LDEwMiwyNDEsLjM1\
+KScsIGljb246J+KEue+4jycgfSwKfTsKCmZ1bmN0aW9uIFRvYXN0SXRlbSh7IHRvYXN0IH0pIHsKICBjb25zdCBbdmlzaWJsZSwg\
+c2V0VmlzaWJsZV0gPSB1c2VTdGF0ZShmYWxzZSk7CiAgdXNlRWZmZWN0KCgpID0+IHsgcmVxdWVzdEFuaW1hdGlvbkZyYW1lKCgp\
+ID0+IHNldFZpc2libGUodHJ1ZSkpOyB9LCBbXSk7CiAgY29uc3QgYyA9IENPTE9SU1t0b2FzdC50eXBlXSB8fCBDT0xPUlMuaW5m\
+bzsKICByZXR1cm4gKAogICAgPGRpdiBzdHlsZT17ewogICAgICAuLi5zLnRvYXN0LAogICAgICBiYWNrZ3JvdW5kOiBjLmJnLAog\
+ICAgICBib3JkZXJDb2xvcjogYy5ib3JkZXIsCiAgICAgIG9wYWNpdHk6IHZpc2libGUgPyAxIDogMCwKICAgICAgdHJhbnNmb3Jt\
+OiB2aXNpYmxlID8gJ25vbmUnIDogJ3RyYW5zbGF0ZVgoNDBweCknLAogICAgfX0+CiAgICAgIDxzcGFuPntjLmljb259PC9zcGFu\
+PgogICAgICA8c3BhbiBzdHlsZT17cy5tc2d9Pnt0b2FzdC5tc2d9PC9zcGFuPgogICAgPC9kaXY+CiAgKTsKfQoKZXhwb3J0IGRl\
+ZmF1bHQgZnVuY3Rpb24gVG9hc3QoeyB0b2FzdHMgfSkgewogIHJldHVybiAoCiAgICA8ZGl2IHN0eWxlPXtzLndyYXB9PgogICAg\
+ICB7dG9hc3RzLm1hcCh0ID0+IDxUb2FzdEl0ZW0ga2V5PXt0LmlkfSB0b2FzdD17dH0gLz4pfQogICAgICA8c3R5bGU+e2BAa2V5\
+ZnJhbWVzIGZhZGVPdXR7dG97b3BhY2l0eTowfX1gfTwvc3R5bGU+CiAgICA8L2Rpdj4KICApOwp9Cgpjb25zdCBzID0gewogIHdy\
+YXA6IHsgcG9zaXRpb246J2ZpeGVkJywgdG9wOjIwLCByaWdodDoyMCwgekluZGV4Ojk5OTksCiAgICBkaXNwbGF5OidmbGV4Jywg\
+ZmxleERpcmVjdGlvbjonY29sdW1uJywgZ2FwOjEwIH0sCiAgdG9hc3Q6IHsgZGlzcGxheTonZmxleCcsIGFsaWduSXRlbXM6J2Nl\
+bnRlcicsIGdhcDoxMCwKICAgIHBhZGRpbmc6JzEycHggMThweCcsIGJvcmRlclJhZGl1czoxMiwKICAgIGJvcmRlcjonMXB4IHNv\
+bGlkJywgYmFja2Ryb3BGaWx0ZXI6J2JsdXIoMTJweCknLAogICAgY29sb3I6JyNmZmYnLCBmb250U2l6ZToxNCwgZm9udEZhbWls\
+eToiJ1NwYWNlIEdyb3Rlc2snLHNhbnMtc2VyaWYiLAogICAgYm94U2hhZG93OicwIDhweCAzMnB4IHJnYmEoMCwwLDAsLjMpJywg\
+bWluV2lkdGg6MjQwLAogICAgdHJhbnNpdGlvbjonYWxsIC4zcyBlYXNlJyB9LAogIG1zZzogeyBmbGV4OjEgfSwKfTsK" | base64 -d > /app/frontend/src/components/Toast.jsx
+
+RUN mkdir -p $(dirname /app/frontend/src/components/StatsBar.jsx) && echo "aW1wb3J0IHsgdXNlU3RhdGUsIHVzZUVmZmVjdCB9IGZyb20gJ3JlYWN0JzsKCmV4cG9ydCBkZWZhdWx0IGZ1bmN0aW9uIFN0YXRz\
+QmFyKCkgewogIGNvbnN0IFtzdGF0cywgc2V0U3RhdHNdID0gdXNlU3RhdGUobnVsbCk7CgogIHVzZUVmZmVjdCgoKSA9PiB7CiAg\
+ICBjb25zdCBmZXRjaF8gPSBhc3luYyAoKSA9PiB7CiAgICAgIHRyeSB7CiAgICAgICAgY29uc3QgciA9IGF3YWl0IGZldGNoKCcv\
+YXBpL3N0YXRzJywgewogICAgICAgICAgaGVhZGVyczogeyAnQXV0aG9yaXphdGlvbic6IGBCZWFyZXIgJHtsb2NhbFN0b3JhZ2Uu\
+Z2V0SXRlbSgnY3BfdG9rZW4nKX1gIH0KICAgICAgICB9KTsKICAgICAgICBzZXRTdGF0cyhhd2FpdCByLmpzb24oKSk7CiAgICAg\
+IH0gY2F0Y2gge30KICAgIH07CiAgICBmZXRjaF8oKTsKICAgIGNvbnN0IGlkID0gc2V0SW50ZXJ2YWwoZmV0Y2hfLCA0MDAwKTsK\
+ICAgIHJldHVybiAoKSA9PiBjbGVhckludGVydmFsKGlkKTsKICB9LCBbXSk7CgogIGNvbnN0IGFjdGl2ZVNlc3Npb25zID0gc3Rh\
+dHMKICAgID8gT2JqZWN0LnZhbHVlcyhzdGF0cy5zZXNzaW9ucyB8fCB7fSkuZmlsdGVyKHMgPT4gcy5ydW5uaW5nKS5sZW5ndGgK\
+ICAgIDogMDsKICBjb25zdCByYW1QY3QgPSBzdGF0cz8ubWVtb3J5CiAgICA/IE1hdGgucm91bmQoKHN0YXRzLm1lbW9yeS51c2Vk\
+IC8gc3RhdHMubWVtb3J5LnRvdGFsKSAqIDEwMCkKICAgIDogbnVsbDsKCiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3MuYmFy\
+fT4KICAgICAgPENoaXAgaWNvbj0i8J+Wpe+4jyIgbGFiZWw9e2Ake2FjdGl2ZVNlc3Npb25zfSDQsNC60YLQuNCy0L3QuNGFYH0g\
+Z2xvdz17YWN0aXZlU2Vzc2lvbnMgPiAwID8gJyMxMGI5ODEnIDogbnVsbH0gLz4KICAgICAge3JhbVBjdCAhPT0gbnVsbCAmJiAo\
+CiAgICAgICAgPENoaXAKICAgICAgICAgIGljb249IvCfkr4iCiAgICAgICAgICBsYWJlbD17YFJBTSAke3JhbVBjdH0lYH0KICAg\
+ICAgICAgIGdsb3c9e3JhbVBjdCA+IDgwID8gJyNlZjQ0NDQnIDogcmFtUGN0ID4gNjAgPyAnI2Y1OWUwYicgOiBudWxsfQogICAg\
+ICAgIC8+CiAgICAgICl9CiAgICAgIHtzdGF0cz8udXB0aW1lICYmIDxDaGlwIGljb249IuKPse+4jyIgbGFiZWw9e2ZtdFVwdGlt\
+ZShzdGF0cy51cHRpbWUpfSAvPn0KICAgIDwvZGl2PgogICk7Cn0KCmZ1bmN0aW9uIENoaXAoeyBpY29uLCBsYWJlbCwgZ2xvdyB9\
+KSB7CiAgcmV0dXJuICgKICAgIDxkaXYgc3R5bGU9e3sKICAgICAgLi4ucy5jaGlwLAogICAgICBib3JkZXJDb2xvcjogZ2xvdyA/\
+IGAke2dsb3d9NTBgIDogJ3JnYmEoMjU1LDI1NSwyNTUsMC4xKScsCiAgICAgIGJhY2tncm91bmQ6IGdsb3cgPyBgJHtnbG93fTE1\
+YCA6ICdyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpJywKICAgIH19PgogICAgICA8c3Bhbj57aWNvbn08L3NwYW4+CiAgICAgIDxzcGFu\
+IHN0eWxlPXtzLmNoaXBMYWJlbH0+e2xhYmVsfTwvc3Bhbj4KICAgICAge2dsb3cgJiYgPHNwYW4gc3R5bGU9e3sgLi4ucy5kb3Qs\
+IGJhY2tncm91bmQ6IGdsb3csIGJveFNoYWRvdzogYDAgMCA2cHggJHtnbG93fWAgfX0gLz59CiAgICA8L2Rpdj4KICApOwp9Cgpm\
+dW5jdGlvbiBmbXRVcHRpbWUoc2VjcykgewogIGNvbnN0IGggPSBNYXRoLmZsb29yKHNlY3MgLyAzNjAwKTsKICBjb25zdCBtID0g\
+TWF0aC5mbG9vcigoc2VjcyAlIDM2MDApIC8gNjApOwogIHJldHVybiBoID4gMCA/IGAke2h90LMgJHttfdGF0LJgIDogYCR7bX3R\
+hdCyYDsKfQoKY29uc3QgcyA9IHsKICBiYXI6IHsgZGlzcGxheTonZmxleCcsIGFsaWduSXRlbXM6J2NlbnRlcicsIGdhcDo4LCBm\
+bGV4V3JhcDond3JhcCcgfSwKICBjaGlwOiB7CiAgICBkaXNwbGF5OidmbGV4JywgYWxpZ25JdGVtczonY2VudGVyJywgZ2FwOjYs\
+CiAgICBwYWRkaW5nOic1cHggMTJweCcsIGJvcmRlclJhZGl1czoyMCwKICAgIGJvcmRlcjonMXB4IHNvbGlkJywgZm9udFNpemU6\
+MTIsCiAgICBmb250RmFtaWx5OiInSW50ZXInLHNhbnMtc2VyaWYiLCBjb2xvcjoncmdiYSgyNTUsMjU1LDI1NSwwLjY1KScsCiAg\
+ICB0cmFuc2l0aW9uOidhbGwgLjNzJywKICB9LAogIGNoaXBMYWJlbDogeyBsZXR0ZXJTcGFjaW5nOicwLjJweCcgfSwKICBkb3Q6\
+IHsgd2lkdGg6NiwgaGVpZ2h0OjYsIGJvcmRlclJhZGl1czonNTAlJywgZGlzcGxheTonaW5saW5lLWJsb2NrJyB9LAp9Owo=" | base64 -d > /app/frontend/src/components/StatsBar.jsx
+
+RUN mkdir -p $(dirname /app/backend/package.json) && echo "ewogICJuYW1lIjogImNsb3VkcGxheS1iYWNrZW5kIiwKICAidmVyc2lvbiI6ICIxLjQuMCIsCiAgInR5cGUiOiAiY29tbW9uanMi\
+LAogICJzY3JpcHRzIjogeyAic3RhcnQiOiAibm9kZSBzZXJ2ZXIuanMiIH0sCiAgImRlcGVuZGVuY2llcyI6IHsKICAgICJleHBy\
+ZXNzIjogIl40LjE4LjIiLAogICAgImh0dHAtcHJveHkiOiAiXjEuMTguMSIsCiAgICAidXVpZCI6ICJeOS4wLjAiCiAgfQp9Cg==" | base64 -d > /app/backend/package.json
+
+RUN mkdir -p $(dirname /app/backend/sessionManager.js) && echo "Y29uc3QgeyBzcGF3biwgZXhlY1N5bmMsIHNwYXduU3luYyB9ID0gcmVxdWlyZSgnY2hpbGRfcHJvY2VzcycpOwpjb25zdCB7IHY0\
+OiB1dWlkdjQgfSA9IHJlcXVpcmUoJ3V1aWQnKTsKY29uc3QgZnMgPSByZXF1aXJlKCdmcycpOwoKY29uc3QgQ09ORklHUyA9IHsK\
+ICBicm93c2VyOiB7IGRpc3BsYXk6JzoxJywgdm5jUG9ydDo1OTAxLCB3c1BvcnQ6NjkwMSwgZ2VvOicxOTIweDEwODAnIH0sCiAg\
+ZGVza3RvcDogeyBkaXNwbGF5Oic6MicsIHZuY1BvcnQ6NTkwMiwgd3NQb3J0OjY5MDIsIGdlbzonMTYwMHg5MDAnICB9LAogIHBo\
+b25lOiAgIHsgZGlzcGxheTonOjMnLCB2bmNQb3J0OjU5MDMsIHdzUG9ydDo2OTAzLCBnZW86JzQxMng5MTUnICAgfSwKfTsKY29u\
+c3Qgc2Vzc2lvbnMgPSB7fTsKCmZ1bmN0aW9uIHNsZWVwKG1zKXsgcmV0dXJuIG5ldyBQcm9taXNlKHIgPT4gc2V0VGltZW91dChy\
+LCBtcykpOyB9CgpmdW5jdGlvbiBzcChjbWQsIGFyZ3MsIGVudiA9IHt9KXsKICBjb25zdCBwID0gc3Bhd24oY21kLCBhcmdzLCB7\
+CiAgICBlbnY6IHsgLi4ucHJvY2Vzcy5lbnYsIC4uLmVudiB9LAogICAgc3RkaW86ICdpZ25vcmUnLCBkZXRhY2hlZDogZmFsc2Us\
+CiAgfSk7CiAgcC5vbignZXJyb3InLCBlID0+IGNvbnNvbGUuZXJyb3IoJ1snICsgY21kICsgJ106JywgZS5tZXNzYWdlKSk7CiAg\
+cmV0dXJuIHA7Cn0KCmFzeW5jIGZ1bmN0aW9uIHdhaXRQb3J0KHBvcnQsIHRyaWVzID0gNTApewogIGZvcihsZXQgaSA9IDA7IGkg\
+PCB0cmllczsgaSsrKXsKICAgIHRyeXsKICAgICAgZXhlY1N5bmMoImJhc2ggLWMgJ2VjaG8gPiAvZGV2L3RjcC8xMjcuMC4wLjEv\
+IiArIHBvcnQgKyAiJyIsIHsgdGltZW91dDo1MDAsIHN0ZGlvOidpZ25vcmUnIH0pOwogICAgICByZXR1cm4gdHJ1ZTsKICAgIH1j\
+YXRjaHt9CiAgICBhd2FpdCBzbGVlcCgzMDApOwogIH0KICByZXR1cm4gZmFsc2U7Cn0KCmFzeW5jIGZ1bmN0aW9uIHdhaXREaXNw\
+bGF5KGQsIHRyaWVzID0gNDApewogIGZvcihsZXQgaSA9IDA7IGkgPCB0cmllczsgaSsrKXsKICAgIGlmKHNwYXduU3luYygneGRw\
+eWluZm8nLCBbJy1kaXNwbGF5JywgZF0sIHsgdGltZW91dDoxMDAwLCBzdGRpbzonaWdub3JlJyB9KS5zdGF0dXMgPT09IDApCiAg\
+ICAgIHJldHVybiB0cnVlOwogICAgYXdhaXQgc2xlZXAoMzAwKTsKICB9CiAgcmV0dXJuIGZhbHNlOwp9CgpmdW5jdGlvbiBjcmVh\
+dGVEZXNrdG9wU2hvcnRjdXRzKCl7CiAgY29uc3QgZGlyID0gJy9yb290L0Rlc2t0b3AnOwogIGZzLm1rZGlyU3luYyhkaXIsIHsg\
+cmVjdXJzaXZlOiB0cnVlIH0pOwogIGNvbnN0IGFwcHMgPSBbCiAgICB7IG5hbWU6J0Nocm9tZScsICAgICAgIGV4ZWM6Jy91c3Iv\
+bG9jYWwvYmluL2Nocm9tZSAlVScsICAgaWNvbjonZ29vZ2xlLWNocm9tZScgICAgICAgICB9LAogICAgeyBuYW1lOidTdGVhbScs\
+ICAgICAgICBleGVjOicvdXNyL2dhbWVzL3N0ZWFtICVVJywgICAgICAgICBpY29uOidzdGVhbScgICAgICAgICAgICAgICAgIH0s\
+CiAgICB7IG5hbWU6J3FCaXR0b3JyZW50JywgIGV4ZWM6J3FiaXR0b3JyZW50JywgICAgICAgICAgICAgICAgIGljb246J3FiaXR0\
+b3JyZW50JyAgICAgICAgICAgfSwKICAgIHsgbmFtZTonRmlsZXMnLCAgICAgICAgZXhlYzonbmVtbycsICAgICAgICAgICAgICAg\
+ICAgICAgICAgaWNvbjonc3lzdGVtLWZpbGUtbWFuYWdlcicgICB9LAogICAgeyBuYW1lOidUZXJtaW5hbCcsICAgICBleGVjOid4\
+ZmNlNC10ZXJtaW5hbCcsICAgICAgICAgICAgICBpY29uOid1dGlsaXRpZXMtdGVybWluYWwnICAgIH0sCiAgICB7IG5hbWU6J0dJ\
+TVAnLCAgICAgICAgIGV4ZWM6J2dpbXAnLCAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2dpbXAnICAgICAgICAgICAgICAg\
+ICAgfSwKICAgIHsgbmFtZTonVkxDJywgICAgICAgICAgZXhlYzondmxjJywgICAgICAgICAgICAgICAgICAgICAgICAgaWNvbjon\
+dmxjJyAgICAgICAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidUZWxlZ3JhbScsICAgICBleGVjOid0ZWxlZ3JhbS1kZXNrdG9w\
+JywgICAgICAgICAgICBpY29uOid0ZWxlZ3JhbScgICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6J0xpYnJlT2ZmaWNlJywgIGV4\
+ZWM6J2xpYnJlb2ZmaWNlJywgICAgICAgICAgICAgICAgIGljb246J2xpYnJlb2ZmaWNlLXN0YXJ0Y2VudGVyJ30sCiAgICB7IG5h\
+bWU6J0F1ZGFjaXR5JywgICAgIGV4ZWM6J2F1ZGFjaXR5JywgICAgICAgICAgICAgICAgICAgIGljb246J2F1ZGFjaXR5JyAgICAg\
+ICAgICAgICAgfSwKICAgIHsgbmFtZTonTHV0cmlzJywgICAgICAgZXhlYzonbHV0cmlzJywgICAgICAgICAgICAgICAgICAgICAg\
+aWNvbjonbHV0cmlzJyAgICAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidXaW5lIENvbmZpZycsICBleGVjOid3aW5lY2ZnJywg\
+ICAgICAgICAgICAgICAgICAgICBpY29uOid3aW5lJyAgICAgICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6J1N5bmFwdGljJywg\
+ICAgIGV4ZWM6J3N5bmFwdGljJywgICAgICAgICAgICAgICAgICAgIGljb246J3N5bmFwdGljJyAgICAgICAgICAgICAgfSwKICAg\
+IHsgbmFtZTonU29mdHdhcmUnLCAgICAgZXhlYzonZ25vbWUtc29mdHdhcmUnLCAgICAgICAgICAgICAgaWNvbjonZ25vbWUtc29m\
+dHdhcmUnICAgICAgICB9LAogICAgeyBuYW1lOidLZWVQYXNzWEMnLCAgICBleGVjOidrZWVwYXNzeGMnLCAgICAgICAgICAgICAg\
+ICAgICBpY29uOidrZWVwYXNzeGMnICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6J1NjcmVlbnNob3QnLCAgIGV4ZWM6J2ZsYW1l\
+c2hvdCBndWknLCAgICAgICAgICAgICAgIGljb246J2ZsYW1lc2hvdCcgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonTW9uaXRv\
+cicsICAgICAgZXhlYzoneGZjZTQtdGVybWluYWwgLWUgYnRvcCcsICAgICAgaWNvbjondXRpbGl0aWVzLXN5c3RlbS1tb25pdG9y\
+J30sCiAgICB7IG5hbWU6J0lua3NjYXBlJywgICAgIGV4ZWM6J2lua3NjYXBlJywgICAgICAgICAgICAgICAgICAgIGljb246J2lu\
+a3NjYXBlJyAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonRmlsZVppbGxhJywgICAgZXhlYzonZmlsZXppbGxhJywgICAgICAg\
+ICAgICAgICAgICAgaWNvbjonZmlsZXppbGxhJyAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidSZW1taW5hJywgICAgICBleGVj\
+OidyZW1taW5hJywgICAgICAgICAgICAgICAgICAgICBpY29uOidyZW1taW5hJyAgICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6\
+J0Rpc2NvcmQnLCAgICAgICBleGVjOicvb3B0L2Rpc2NvcmQvRGlzY29yZCcsICAgICAgICAgIGljb246J2Rpc2NvcmQnICAgICAg\
+ICAgICAgICAgfSwKICAgIHsgbmFtZTonSGVyb2ljJywgICAgICAgIGV4ZWM6J2hlcm9pYycsICAgICAgICAgICAgICAgICAgICAg\
+ICAgaWNvbjonaGVyb2ljJyAgICAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidSZXRyb0FyY2gnLCAgICAgZXhlYzoncmV0cm9h\
+cmNoJywgICAgICAgICAgICAgICAgICAgICBpY29uOidyZXRyb2FyY2gnICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6J0tyaXRh\
+JywgICAgICAgICBleGVjOidrcml0YScsICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2tyaXRhJyAgICAgICAgICAgICAg\
+ICAgfSwKICAgIHsgbmFtZTonU2hvdGN1dCcsICAgICAgIGV4ZWM6J3Nob3RjdXQnLCAgICAgICAgICAgICAgICAgICAgICAgaWNv\
+bjonc2hvdGN1dCcgICAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidLZGVubGl2ZScsICAgICAgZXhlYzona2RlbmxpdmUnLCAg\
+ICAgICAgICAgICAgICAgICAgICBpY29uOidrZGVubGl2ZScgICAgICAgICAgICAgIH0sCiAgICB7IG5hbWU6J1RodW5kZXJiaXJk\
+JywgICBleGVjOid0aHVuZGVyYmlyZCcsICAgICAgICAgICAgICAgICAgIGljb246J3RodW5kZXJiaXJkJyAgICAgICAgICAgfSwK\
+ICAgIHsgbmFtZTonVlMgQ29kZScsICAgICAgIGV4ZWM6J2NvZGUgLS1uby1zYW5kYm94JywgICAgICAgICAgICAgIGljb246J2Nv\
+ZGUnICAgICAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQmxlbmRlcicsICAgICAgIGV4ZWM6J2JsZW5kZXInLCAgICAgICAg\
+ICAgICAgICAgICAgICAgIGljb246J2JsZW5kZXInICAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonVGlsaXgnLCAgICAgICAg\
+IGV4ZWM6J3RpbGl4JywgICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J3RpbGl4JyAgICAgICAgICAgICAgICAgfSwKICAg\
+IHsgbmFtZTonR1BhcnRlZCcsICAgICAgIGV4ZWM6J2dwYXJ0ZWQnLCAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2dwYXJ0\
+ZWQnICAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQ2hlZXNlJywgICAgICAgIGV4ZWM6J2NoZWVzZScsICAgICAgICAgICAg\
+ICAgICAgICAgICAgIGljb246J2NoZWVzZScgICAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQ2FsY3VsYXRvcicsICAgIGV4\
+ZWM6J2dub21lLWNhbGN1bGF0b3InLCAgICAgICAgICAgICAgIGljb246J2dub21lLWNhbGN1bGF0b3InICAgICAgfSwKICAgIHsg\
+bmFtZTonVGltZXNoaWZ0JywgICAgIGV4ZWM6J3RpbWVzaGlmdC1ndGsnLCAgICAgICAgICAgICAgICAgIGljb246J3RpbWVzaGlm\
+dCcgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQmxlYWNoQml0JywgICAgIGV4ZWM6J2JsZWFjaGJpdCcsICAgICAgICAgICAg\
+ICAgICAgICAgIGljb246J2JsZWFjaGJpdCcgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQ2xhbVRLJywgICAgICAgIGV4ZWM6\
+J2NsYW10aycsICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2NsYW10aycgICAgICAgICAgICAgICAgfSwKICAgIHsgbmFt\
+ZTonWG91cm5hbCsrJywgICAgIGV4ZWM6J3hvdXJuYWxwcCcsICAgICAgICAgICAgICAgICAgICAgIGljb246J3hvdXJuYWxwcCcg\
+ICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonQ2FsaWJyZScsICAgICAgIGV4ZWM6J2NhbGlicmUnLCAgICAgICAgICAgICAgICAg\
+ICAgICAgIGljb246J2NhbGlicmUtZ3VpJyAgICAgICAgICAgfSwKICAgIHsgbmFtZTonSGFuZEJyYWtlJywgICAgIGV4ZWM6J2do\
+YicsICAgICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2hhbmRicmFrZScgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTon\
+TmVvZmV0Y2gnLCAgICAgIGV4ZWM6J3hmY2U0LXRlcm1pbmFsIC1lIG5lb2ZldGNoJywgICAgIGljb246J3V0aWxpdGllcy10ZXJt\
+aW5hbCcgICAgfSwKICAgIHsgbmFtZTonV2lyZXNoYXJrJywgICAgIGV4ZWM6J3dpcmVzaGFyaycsICAgICAgICAgICAgICAgICAg\
+ICAgIGljb246J3dpcmVzaGFyaycgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonbm1hcCcsICAgICAgICAgIGV4ZWM6J3hmY2U0\
+LXRlcm1pbmFsIC1lIG5tYXAnLCAgICAgICAgIGljb246J3V0aWxpdGllcy10ZXJtaW5hbCcgICAgfSwKICAgIHsgbmFtZTonRGlz\
+ayBVc2FnZScsICAgIGV4ZWM6J2Jhb2JhYicsICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2Jhb2JhYicgICAgICAgICAg\
+ICAgICAgfSwKICAgIHsgbmFtZTonVGV4dCBFZGl0b3InLCAgIGV4ZWM6J2dlZGl0JywgICAgICAgICAgICAgICAgICAgICAgICAg\
+IGljb246J2dlZGl0JyAgICAgICAgICAgICAgICAgfSwKICAgIHsgbmFtZTonRm9udCBNYW5hZ2VyJywgIGV4ZWM6J2ZvbnQtbWFu\
+YWdlcicsICAgICAgICAgICAgICAgICAgIGljb246J2ZvbnQtbWFuYWdlcicgICAgICAgICAgfSwKICAgIHsgbmFtZTonV2ViY2Ft\
+JywgICAgICAgIGV4ZWM6J2NoZWVzZScsICAgICAgICAgICAgICAgICAgICAgICAgIGljb246J2NoZWVzZScgICAgICAgICAgICAg\
+ICAgfSwKICAgIHsgbmFtZTonV2lyZXNoYXJrJywgICAgIGV4ZWM6J3dpcmVzaGFyaycsICAgICAgICAgICAgICAgICAgICAgaWNv\
+bjond2lyZXNoYXJrJyAgICAgICAgICAgICB9LAogICAgeyBuYW1lOidWaXJ0dWFsQm94JywgICAgZXhlYzondmlydHVhbGJveCcs\
+ICAgICAgICAgICAgICAgICAgICBpY29uOid2aXJ0dWFsYm94JyAgICAgICAgICAgIH0sCiAgXTsKICBhcHBzLmZvckVhY2goYSA9\
+PiB7CiAgICBjb25zdCBmID0gZGlyICsgJy8nICsgYS5uYW1lLnJlcGxhY2UoL1xzL2csJycpICsgJy5kZXNrdG9wJzsKICAgIGZz\
+LndyaXRlRmlsZVN5bmMoZiwKICAgICAgJ1tEZXNrdG9wIEVudHJ5XVxuVHlwZT1BcHBsaWNhdGlvblxuTmFtZT0nICsgYS5uYW1l\
+ICsKICAgICAgJ1xuRXhlYz0nICsgYS5leGVjICsgJ1xuSWNvbj0nICsgYS5pY29uICsgJ1xuVGVybWluYWw9ZmFsc2VcbicpOwog\
+ICAgdHJ5eyBmcy5jaG1vZFN5bmMoZiwgJzc1NScpOyB9Y2F0Y2h7fQogIH0pOwp9CgpmdW5jdGlvbiBzZXR1cFRoZW1lKCl7CiAg\
+Y29uc3QgeGMgPSAnL3Jvb3QvLmNvbmZpZy94ZmNlNC94ZmNvbmYveGZjZS1wZXJjaGFubmVsLXhtbCc7CiAgZnMubWtkaXJTeW5j\
+KHhjLCB7IHJlY3Vyc2l2ZTogdHJ1ZSB9KTsKICBmcy5ta2RpclN5bmMoJy9yb290Ly5jb25maWcvYXV0b3N0YXJ0JywgeyByZWN1\
+cnNpdmU6IHRydWUgfSk7CgogIGZzLndyaXRlRmlsZVN5bmMoeGMgKyAnL3hzZXR0aW5ncy54bWwnLAogICAgJzw/eG1sIHZlcnNp\
+b249IjEuMCIgZW5jb2Rpbmc9IlVURi04Ij8+XG4nICsKICAgICc8Y2hhbm5lbCBuYW1lPSJ4c2V0dGluZ3MiIHZlcnNpb249IjEu\
+MCI+XG4nICsKICAgICcgIDxwcm9wZXJ0eSBuYW1lPSJOZXQiIHR5cGU9ImVtcHR5Ij5cbicgKwogICAgJyAgICA8cHJvcGVydHkg\
+bmFtZT0iVGhlbWVOYW1lIiB0eXBlPSJzdHJpbmciIHZhbHVlPSJBcmMtRGFyayIvPlxuJyArCiAgICAnICAgIDxwcm9wZXJ0eSBu\
+YW1lPSJJY29uVGhlbWVOYW1lIiB0eXBlPSJzdHJpbmciIHZhbHVlPSJQYXBpcnVzLURhcmsiLz5cbicgKwogICAgJyAgPC9wcm9w\
+ZXJ0eT5cbicgKwogICAgJyAgPHByb3BlcnR5IG5hbWU9Ikd0ayIgdHlwZT0iZW1wdHkiPlxuJyArCiAgICAnICAgIDxwcm9wZXJ0\
+eSBuYW1lPSJGb250TmFtZSIgdHlwZT0ic3RyaW5nIiB2YWx1ZT0iU2FucyAxMSIvPlxuJyArCiAgICAnICA8L3Byb3BlcnR5Plxu\
+JyArCiAgICAnPC9jaGFubmVsPicpOwoKICBmcy53cml0ZUZpbGVTeW5jKHhjICsgJy94ZndtNC54bWwnLAogICAgJzw/eG1sIHZl\
+cnNpb249IjEuMCIgZW5jb2Rpbmc9IlVURi04Ij8+XG4nICsKICAgICc8Y2hhbm5lbCBuYW1lPSJ4ZndtNCIgdmVyc2lvbj0iMS4w\
+Ij5cbicgKwogICAgJyAgPHByb3BlcnR5IG5hbWU9ImdlbmVyYWwiIHR5cGU9ImVtcHR5Ij5cbicgKwogICAgJyAgICA8cHJvcGVy\
+dHkgbmFtZT0idGhlbWUiIHR5cGU9InN0cmluZyIgdmFsdWU9IkFyYy1EYXJrIi8+XG4nICsKICAgICcgICAgPHByb3BlcnR5IG5h\
+bWU9ImJ1dHRvbl9sYXlvdXQiIHR5cGU9InN0cmluZyIgdmFsdWU9InxITUMiLz5cbicgKwogICAgJyAgICA8cHJvcGVydHkgbmFt\
+ZT0idXNlX2NvbXBvc2l0aW5nIiB0eXBlPSJib29sIiB2YWx1ZT0iZmFsc2UiLz5cbicgKwogICAgJyAgPC9wcm9wZXJ0eT5cbicg\
+KwogICAgJzwvY2hhbm5lbD4nKTsKCiAgLy8gQ2hyb21lIHdyYXBwZXIKICBmcy53cml0ZUZpbGVTeW5jKCcvdXNyL2xvY2FsL2Jp\
+bi9jaHJvbWUnLAogICAgJyMhL2Jpbi9iYXNoXG5leGVjIGdvb2dsZS1jaHJvbWUgLS1uby1zYW5kYm94IC0tZGlzYWJsZS1kZXYt\
+c2htLXVzYWdlIC0tZGlzYWJsZS1ncHUgIiRAIlxuJyk7CiAgdHJ5eyBmcy5jaG1vZFN5bmMoJy91c3IvbG9jYWwvYmluL2Nocm9t\
+ZScsICc3NTUnKTsgfWNhdGNoe30KCiAgLy8gQXV0b3N0YXJ0OiBUcnVzdCBkZXNrdG9wIGZpbGVzICsgTmVtbyBzZXR0aW5nCiAg\
+ZnMud3JpdGVGaWxlU3luYygnL3Jvb3QvLmNvbmZpZy9hdXRvc3RhcnQvdHJ1c3QtZGVza3RvcC5kZXNrdG9wJywKICAgICdbRGVz\
+a3RvcCBFbnRyeV0KVHlwZT1BcHBsaWNhdGlvbgpOYW1lPVRydXN0RGVza3RvcAonICsKICAgICdFeGVjPWJhc2ggLWMgJ2dzZXR0\
+aW5ncyBzZXQgb3JnLm5lbW8ucHJlZmVyZW5jZXMgZXhlY3V0YWJsZS10ZXh0LWFjdGl2YXRpb24gbGF1bmNoIDI+L2Rldi9udWxs\
+OyAnICsKICAgICdzbGVlcCAyOyBmb3IgZiBpbiAvcm9vdC9EZXNrdG9wLyouZGVza3RvcDsgZG8gZ2lvIHNldCBcIG1ldGFkYXRh\
+Ojp0cnVzdGVkIHRydWUgMj4vZGV2L251bGw7IGRvbmUnCicgKwogICAgJ1Rlcm1pbmFsPWZhbHNlClgtR05PTUUtQXV0b3N0YXJ0\
+LWVuYWJsZWQ9dHJ1ZQonKTsKCiAgLy8gQXV0b3N0YXJ0IENocm9tZQogIGZzLndyaXRlRmlsZVN5bmMoJy9yb290Ly5jb25maWcv\
+YXV0b3N0YXJ0L2Nocm9tZS5kZXNrdG9wJywKICAgICdbRGVza3RvcCBFbnRyeV1cblR5cGU9QXBwbGljYXRpb25cbk5hbWU9Q2hy\
+b21lXG4nICsKICAgICdFeGVjPS91c3IvbG9jYWwvYmluL2Nocm9tZSBodHRwczovL3d3dy5nb29nbGUuY29tXG5UZXJtaW5hbD1m\
+YWxzZVxuJyk7CgogIC8vIEF1dG9zdGFydCBQbGFuayBkb2NrCiAgZnMud3JpdGVGaWxlU3luYygnL3Jvb3QvLmNvbmZpZy9hdXRv\
+c3RhcnQvcGxhbmsuZGVza3RvcCcsCiAgICAnW0Rlc2t0b3AgRW50cnldXG5UeXBlPUFwcGxpY2F0aW9uXG5OYW1lPVBsYW5rXG5F\
+eGVjPXBsYW5rXG5UZXJtaW5hbD1mYWxzZVxuJyk7Cn0KCmFzeW5jIGZ1bmN0aW9uIHN0YXJ0U2Vzc2lvbih0eXBlKXsKICBpZihz\
+ZXNzaW9uc1t0eXBlXSkgYXdhaXQgc3RvcFNlc3Npb24odHlwZSk7CiAgY29uc3QgY2ZnID0gQ09ORklHU1t0eXBlXTsKICBjb25z\
+dCBwcm9jcyA9IHt9OwogIGNvbnNvbGUubG9nKCdTdGFydGluZyBbJyArIHR5cGUgKyAnXS4uLicpOwoKICBmcy5ta2RpclN5bmMo\
+Jy9yb290Ly52bmMnLCB7IHJlY3Vyc2l2ZTogdHJ1ZSB9KTsKCiAgcHJvY3Mudm5jID0gc3AoJ1h2bmMnLCBbCiAgICBjZmcuZGlz\
+cGxheSwKICAgICctZ2VvbWV0cnknLCBjZmcuZ2VvLAogICAgJy1kZXB0aCcsICcyNCcsCiAgICAnLVNlY3VyaXR5VHlwZXMnLCAn\
+Tm9uZScsCiAgICAnLWxvY2FsaG9zdCcsICdubycsCiAgICAnLXJmYnBvcnQnLCBTdHJpbmcoY2ZnLnZuY1BvcnQpLAogICAgJy1k\
+cGknLCAnOTYnLAogICAgJy1BY2NlcHRTZXREZXNrdG9wU2l6ZScsCiAgXSwgeyBIT01FOiAnL3Jvb3QnIH0pOwoKICBhd2FpdCB3\
+YWl0RGlzcGxheShjZmcuZGlzcGxheSk7CiAgYXdhaXQgd2FpdFBvcnQoY2ZnLnZuY1BvcnQpOwogIGF3YWl0IHNsZWVwKDMwMCk7\
+CgogIHNwKCd4c2V0cm9vdCcsIFsnLXNvbGlkJywgJyMwZDExMTcnLCAnLWRpc3BsYXknLCBjZmcuZGlzcGxheV0pOwoKICBpZih0\
+eXBlID09PSAnYnJvd3NlcicpewogICAgc2V0dXBUaGVtZSgpOwogICAgcHJvY3Mud20gPSBzcCgnb3BlbmJveCcsIFsnLS1jb25m\
+aWctZmlsZScsICcvYXBwL29iLXJjLnhtbCddLAogICAgICB7IERJU1BMQVk6IGNmZy5kaXNwbGF5LCBIT01FOiAnL3Jvb3QnIH0p\
+OwogICAgYXdhaXQgc2xlZXAoNzAwKTsKICAgIHByb2NzLmFwcCA9IHNwKCcvdXNyL2xvY2FsL2Jpbi9jaHJvbWUnLAogICAgICBb\
+Jy0tc3RhcnQtbWF4aW1pemVkJywgJ2h0dHBzOi8vd3d3Lmdvb2dsZS5jb20nXSwKICAgICAgeyBESVNQTEFZOiBjZmcuZGlzcGxh\
+eSwgSE9NRTogJy9yb290JyB9KTsKCiAgfSBlbHNlIGlmKHR5cGUgPT09ICdkZXNrdG9wJyl7CiAgICBmcy5ta2RpclN5bmMoJy90\
+bXAveGRnJywgeyByZWN1cnNpdmU6IHRydWUgfSk7CiAgICBjcmVhdGVEZXNrdG9wU2hvcnRjdXRzKCk7CiAgICBzZXR1cFRoZW1l\
+KCk7CgogICAgcHJvY3Mud20gPSBzcCgnYmFzaCcsIFsnLWMnLAogICAgICAnZXhwb3J0IERJU1BMQVk9JyArIGNmZy5kaXNwbGF5\
+ICsgJyBIT01FPS9yb290IFhER19SVU5USU1FX0RJUj0vdG1wL3hkZyAnICsKICAgICAgJ1hER19TRVNTSU9OX1RZUEU9eDExIFhE\
+R19TRVNTSU9OX0RFU0tUT1A9Y2lubmFtb24gWERHX0NVUlJFTlRfREVTS1RPUD1YLUNpbm5hbW9uICcgKwogICAgICAnWEtMX1hN\
+T0RNQVBfRElTQUJMRT0xIERCVVNfU0VTU0lPTl9CVVNfQUREUkVTUz1hdXRvbGF1bmNoOiAmJiAnICsKICAgICAgJ2RidXMtcnVu\
+LXNlc3Npb24gLS0gY2lubmFtb24tc2Vzc2lvbiAyPi90bXAvY2lubmFtb24ubG9nIHx8IHN0YXJ0eGZjZTQgMj4vdG1wL3hmY2Uu\
+bG9nJwogICAgXSwgeyBESVNQTEFZOiBjZmcuZGlzcGxheSwgSE9NRTogJy9yb290JywgWERHX1JVTlRJTUVfRElSOiAnL3RtcC94\
+ZGcnIH0pOwoKICB9IGVsc2UgewogICAgcHJvY3Mud20gPSBzcCgnb3BlbmJveCcsIFsnLS1jb25maWctZmlsZScsICcvYXBwL29i\
+LXJjLnhtbCddLAogICAgICB7IERJU1BMQVk6IGNmZy5kaXNwbGF5LCBIT01FOiAnL3Jvb3QnIH0pOwogICAgYXdhaXQgc2xlZXAo\
+NzAwKTsKICAgIHByb2NzLmFwcCA9IHNwKCcvdXNyL2xvY2FsL2Jpbi9jaHJvbWUnLAogICAgICBbJy0tYXBwPWZpbGU6Ly8vYXBw\
+L2JhY2tlbmQvYW5kcm9pZC5odG1sJywgJy0td2luZG93LXNpemU9NDEyLDkxNScsICctLXdpbmRvdy1wb3NpdGlvbj0wLDAnXSwK\
+ICAgICAgeyBESVNQTEFZOiBjZmcuZGlzcGxheSwgSE9NRTogJy9yb290JyB9KTsKICB9CgogIGF3YWl0IHNsZWVwKHR5cGUgPT09\
+ICdkZXNrdG9wJyA/IDcwMDAgOiA1MDAwKTsKCiAgcHJvY3Mud3MgPSBzcCgnd2Vic29ja2lmeScsIFtTdHJpbmcoY2ZnLndzUG9y\
+dCksICdsb2NhbGhvc3Q6JyArIGNmZy52bmNQb3J0XSk7CiAgYXdhaXQgd2FpdFBvcnQoY2ZnLndzUG9ydCk7CgogIHNlc3Npb25z\
+W3R5cGVdID0geyBpZDogdXVpZHY0KCksIHR5cGUsIHByb2NzLCBzdGFydFRpbWU6IG5ldyBEYXRlKCkgfTsKICBjb25zb2xlLmxv\
+ZygnWycgKyB0eXBlICsgJ10gcmVhZHknKTsKICByZXR1cm4gc2Vzc2lvbnNbdHlwZV07Cn0KCmFzeW5jIGZ1bmN0aW9uIHN0b3BT\
+ZXNzaW9uKHR5cGUpewogIGNvbnN0IHMgPSBzZXNzaW9uc1t0eXBlXTsKICBpZighcykgcmV0dXJuOwogIGZvcihjb25zdCBwIG9m\
+IE9iamVjdC52YWx1ZXMocy5wcm9jcykucmV2ZXJzZSgpKQogICAgdHJ5eyBpZihwICYmICFwLmtpbGxlZCkgcC5raWxsKCdTSUdU\
+RVJNJyk7IH1jYXRjaHt9CiAgZGVsZXRlIHNlc3Npb25zW3R5cGVdOwogIGF3YWl0IHNsZWVwKDUwMCk7Cn0KCmZ1bmN0aW9uIGdl\
+dEFsbFN0YXR1cygpewogIGNvbnN0IG8gPSB7IGJyb3dzZXI6e3J1bm5pbmc6ZmFsc2V9LCBkZXNrdG9wOntydW5uaW5nOmZhbHNl\
+fSwgcGhvbmU6e3J1bm5pbmc6ZmFsc2V9IH07CiAgZm9yKGNvbnN0IFt0LCBzXSBvZiBPYmplY3QuZW50cmllcyhzZXNzaW9ucykp\
+CiAgICBvW3RdID0gcyA/IHsgcnVubmluZzp0cnVlLCBpZDpzLmlkLCBzdGFydFRpbWU6cy5zdGFydFRpbWUgfSA6IHsgcnVubmlu\
+ZzpmYWxzZSB9OwogIHJldHVybiBvOwp9Cgptb2R1bGUuZXhwb3J0cyA9IHsgc3RhcnRTZXNzaW9uLCBzdG9wU2Vzc2lvbiwgZ2V0\
+QWxsU3RhdHVzIH07Cg==" | base64 -d > /app/backend/sessionManager.js
+
+RUN mkdir -p $(dirname /app/backend/server.js) && echo "Y29uc3QgZXhwcmVzcyAgID0gcmVxdWlyZSgnZXhwcmVzcycpOwpjb25zdCBodHRwICAgICAgPSByZXF1aXJlKCdodHRwJyk7CmNv\
+bnN0IGh0dHBQcm94eSA9IHJlcXVpcmUoJ2h0dHAtcHJveHknKTsKY29uc3QgcGF0aCAgICAgID0gcmVxdWlyZSgncGF0aCcpOwpj\
+b25zdCBjcnlwdG8gICAgPSByZXF1aXJlKCdjcnlwdG8nKTsKY29uc3QgZnMgICAgICAgID0gcmVxdWlyZSgnZnMnKTsKCmNvbnN0\
+IGFwcCAgICA9IGV4cHJlc3MoKTsKY29uc3Qgc2VydmVyID0gaHR0cC5jcmVhdGVTZXJ2ZXIoYXBwKTsKY29uc3QgcHJveHkgID0g\
+aHR0cFByb3h5LmNyZWF0ZVByb3h5U2VydmVyKHsgd3M6dHJ1ZSwgY2hhbmdlT3JpZ2luOnRydWUgfSk7CnByb3h5Lm9uKCdlcnJv\
+cicsIChlLCByZXEsIHJlcykgPT4gewogIGNvbnNvbGUuZXJyb3IoJ1twcm94eV0nLCBlLm1lc3NhZ2UpOwogIGlmIChyZXM/Lndy\
+aXRlSGVhZCkgeyByZXMud3JpdGVIZWFkKDUwMik7IHJlcy5lbmQoJ1ZOQyBub3QgcmVhZHknKTsgfQp9KTsKCmFwcC51c2UoZXhw\
+cmVzcy5qc29uKCkpOwoKLy8g0KHRgtCw0YLQuNC60LAKY29uc3QgRElTVCAgPSBwYXRoLmpvaW4oX19kaXJuYW1lLCAnLi4vZnJv\
+bnRlbmQvZGlzdCcpOwpjb25zdCBOT1ZOQyA9ICcvb3B0L25vdm5jJzsKYXBwLnVzZShleHByZXNzLnN0YXRpYyhESVNUKSk7CmFw\
+cC51c2UoJy9ub3ZuYycsIGV4cHJlc3Muc3RhdGljKE5PVk5DKSk7CgovLyBBdXRoCmNvbnN0IFRPS0VOUyAgID0gbmV3IFNldCgp\
+Owpjb25zdCBQQVNTV09SRCA9IHByb2Nlc3MuZW52LkNMT1VEUExBWV9QQVNTV09SRCB8fCAnY2xvdWRwbGF5JzsKCmFwcC5wb3N0\
+KCcvYXBpL2F1dGgvbG9naW4nLCAocmVxLCByZXMpID0+IHsKICBpZiAoIXJlcS5ib2R5IHx8IHJlcS5ib2R5LnBhc3N3b3JkICE9\
+PSBQQVNTV09SRCkKICAgIHJldHVybiByZXMuc3RhdHVzKDQwMSkuanNvbih7IHN1Y2Nlc3M6ZmFsc2UsIGVycm9yOifQndC10LLR\
+ltGA0L3QuNC5INC/0LDRgNC+0LvRjCcgfSk7CiAgY29uc3QgdG9rZW4gPSBjcnlwdG8ucmFuZG9tVVVJRCgpOwogIFRPS0VOUy5h\
+ZGQodG9rZW4pOwogIHNldFRpbWVvdXQoKCkgPT4gVE9LRU5TLmRlbGV0ZSh0b2tlbiksIDg2NDAwMDAwKTsKICByZXMuanNvbih7\
+IHN1Y2Nlc3M6dHJ1ZSwgdG9rZW4gfSk7Cn0pOwoKZnVuY3Rpb24gYXV0aChyZXEsIHJlcywgbmV4dCkgewogIGNvbnN0IGggPSBy\
+ZXEuaGVhZGVycy5hdXRob3JpemF0aW9uOwogIGlmICghaD8uc3RhcnRzV2l0aCgnQmVhcmVyICcpIHx8ICFUT0tFTlMuaGFzKGgu\
+c3BsaXQoJyAnKVsxXSkpCiAgICByZXR1cm4gcmVzLnN0YXR1cyg0MDEpLmpzb24oeyBlcnJvcjonVW5hdXRob3JpemVkJyB9KTsK\
+ICBuZXh0KCk7Cn0KCi8vIFNlc3Npb24gbWFuYWdlcgpsZXQgc20gPSBudWxsOwpmdW5jdGlvbiBnZXRTTSgpIHsKICBpZiAoIXNt\
+KSB0cnkgeyBzbSA9IHJlcXVpcmUoJy4vc2Vzc2lvbk1hbmFnZXInKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUuZXJyb3IoJ1tTTV0n\
+LCBlLm1lc3NhZ2UpOyB9CiAgcmV0dXJuIHNtOwp9CgphcHAucG9zdCgnL2FwaS9zZXNzaW9ucy9zdGFydC86dHlwZScsIGF1dGgs\
+IGFzeW5jIChyZXEsIHJlcykgPT4gewogIGNvbnN0IG1nciA9IGdldFNNKCk7CiAgaWYgKCFtZ3IpIHJldHVybiByZXMuc3RhdHVz\
+KDUwMykuanNvbih7IHN1Y2Nlc3M6ZmFsc2UsIGVycm9yOidTTSB1bmF2YWlsYWJsZScgfSk7CiAgY29uc3QgeyB0eXBlIH0gPSBy\
+ZXEucGFyYW1zOwogIGlmICghWydicm93c2VyJywnZGVza3RvcCcsJ3Bob25lJ10uaW5jbHVkZXModHlwZSkpCiAgICByZXR1cm4g\
+cmVzLnN0YXR1cyg0MDApLmpzb24oeyBzdWNjZXNzOmZhbHNlLCBlcnJvcjonQmFkIHR5cGUnIH0pOwogIHRyeSB7CiAgICBhd2Fp\
+dCBtZ3Iuc3RhcnRTZXNzaW9uKHR5cGUpOwogICAgcmVzLmpzb24oeyBzdWNjZXNzOnRydWUsCiAgICAgIHZuY1VybDpgL25vdm5j\
+L3ZuYy5odG1sP3BhdGg9d2Vic29ja2lmeS8ke3R5cGV9JmF1dG9jb25uZWN0PXRydWUmcmVjb25uZWN0PXRydWVgIH0pOwogIH0g\
+Y2F0Y2goZSkgeyByZXMuc3RhdHVzKDUwMCkuanNvbih7IHN1Y2Nlc3M6ZmFsc2UsIGVycm9yOmUubWVzc2FnZSB9KTsgfQp9KTsK\
+CmFwcC5wb3N0KCcvYXBpL3Nlc3Npb25zL3N0b3AvOnR5cGUnLCBhdXRoLCBhc3luYyAocmVxLCByZXMpID0+IHsKICBjb25zdCBt\
+Z3IgPSBnZXRTTSgpOwogIGlmIChtZ3IpIGF3YWl0IG1nci5zdG9wU2Vzc2lvbihyZXEucGFyYW1zLnR5cGUpLmNhdGNoKCgpPT57\
+fSk7CiAgcmVzLmpzb24oeyBzdWNjZXNzOnRydWUgfSk7Cn0pOwoKYXBwLmdldCgnL2FwaS9zZXNzaW9ucy9zdGF0dXMnLCBhdXRo\
+LCAocmVxLCByZXMpID0+IHsKICBjb25zdCBtZ3IgPSBnZXRTTSgpOwogIHJlcy5qc29uKG1nciA/IG1nci5nZXRBbGxTdGF0dXMo\
+KSA6IHticm93c2VyOntydW5uaW5nOmZhbHNlfSxkZXNrdG9wOntydW5uaW5nOmZhbHNlfSxwaG9uZTp7cnVubmluZzpmYWxzZX19\
+KTsKfSk7CgphcHAuZ2V0KCcvYXBpL3N0YXRzJywgYXV0aCwgKHJlcSwgcmVzKSA9PiB7CiAgdHJ5IHsKICAgIGNvbnN0IG1lbSAg\
+ID0gZnMucmVhZEZpbGVTeW5jKCcvcHJvYy9tZW1pbmZvJywndXRmOCcpOwogICAgY29uc3QgdG90YWwgPSBwYXJzZUludChtZW0u\
+bWF0Y2goL01lbVRvdGFsOlxzKyhcZCspLyk/LlsxXXx8JzAnKS8xMDI0OwogICAgY29uc3QgYXZhaWwgPSBwYXJzZUludChtZW0u\
+bWF0Y2goL01lbUF2YWlsYWJsZTpccysoXGQrKS8pPy5bMV18fCcwJykvMTAyNDsKICAgIHJlcy5qc29uKHsgbWVtb3J5Ont0b3Rh\
+bDpNYXRoLnJvdW5kKHRvdGFsKSx1c2VkOk1hdGgucm91bmQodG90YWwtYXZhaWwpfSwKICAgICAgdXB0aW1lOk1hdGguZmxvb3Io\
+cHJvY2Vzcy51cHRpbWUoKSksIHNlc3Npb25zOmdldFNNKCk/LmdldEFsbFN0YXR1cygpfHx7fSB9KTsKICB9IGNhdGNoIHsgcmVz\
+Lmpzb24oe21lbW9yeTp7dG90YWw6MCx1c2VkOjB9LHVwdGltZTowLHNlc3Npb25zOnt9fSk7IH0KfSk7CgphcHAuZ2V0KCcvYXBp\
+L2hlYWx0aCcsIChyZXEsIHJlcykgPT4gcmVzLmpzb24oeyBzdGF0dXM6J29rJywgdmVyc2lvbjonMS40JyB9KSk7CgovLyBTUEEg\
+ZmFsbGJhY2sKYXBwLmdldCgnKicsIChyZXEsIHJlcykgPT4gcmVzLnNlbmRGaWxlKHBhdGguam9pbihESVNULCAnaW5kZXguaHRt\
+bCcpKSk7CgovLyBXZWJTb2NrZXQgcHJveHkg4oaSIHdlYnNvY2tpZnkKY29uc3QgV1NfUE9SVFMgPSB7IGJyb3dzZXI6NjkwMSwg\
+ZGVza3RvcDo2OTAyLCBwaG9uZTo2OTAzIH07CgpzZXJ2ZXIub24oJ3VwZ3JhZGUnLCAocmVxLCBzb2NrZXQsIGhlYWQpID0+IHsK\
+ICBjb25zdCBtID0gcmVxLnVybC5tYXRjaCgvXlwvd2Vic29ja2lmeVwvKFx3KykvKTsKICBpZiAoIW0pIHsgc29ja2V0LmRlc3Ry\
+b3koKTsgcmV0dXJuOyB9CiAgY29uc3QgcG9ydCA9IFdTX1BPUlRTW21bMV1dOwogIGlmICghcG9ydCkgeyBzb2NrZXQuZGVzdHJv\
+eSgpOyByZXR1cm47IH0KICBjb25zb2xlLmxvZyhgW1dTXSBwcm94eWluZyAke21bMV19IOKGkiA6JHtwb3J0fWApOwogIHByb3h5\
+LndzKHJlcSwgc29ja2V0LCBoZWFkLCB7IHRhcmdldDpgd3M6Ly8xMjcuMC4wLjE6JHtwb3J0fWAgfSk7Cn0pOwoKY29uc3QgUE9S\
+VCA9IHBhcnNlSW50KHByb2Nlc3MuZW52LlBPUlQgfHwgJzgwODAnKTsKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsICgp\
+ID0+IHsKICBjb25zb2xlLmxvZyhg4pyFIENsb3VkUGxheSB2MS40IDoke1BPUlR9YCk7CiAgZ2V0U00oKTsKfSk7Cg==" | base64 -d > /app/backend/server.js
+
+RUN mkdir -p $(dirname /app/backend/android.html) && echo "PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9InVrIj4KPGhlYWQ+CjxtZXRhIGNoYXJzZXQ9IlVURi04Ij4KPG1ldGEgbmFtZT0i\
+dmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPTQxMixpbml0aWFsLXNjYWxlPTEiPgo8dGl0bGU+Q2xvdWRQbGF5IFBob25lPC90aXRs\
+ZT4KPHN0eWxlPgoqe21hcmdpbjowO3BhZGRpbmc6MDtib3gtc2l6aW5nOmJvcmRlci1ib3g7LXdlYmtpdC10YXAtaGlnaGxpZ2h0\
+LWNvbG9yOnRyYW5zcGFyZW50fQpib2R5e3dpZHRoOjQxMnB4O2hlaWdodDo5MTVweDtvdmVyZmxvdzpoaWRkZW47Zm9udC1mYW1p\
+bHk6J1NlZ29lIFVJJyxSb2JvdG8sc2Fucy1zZXJpZjtiYWNrZ3JvdW5kOiMwMDA7dXNlci1zZWxlY3Q6bm9uZX0KCi8qIFdBTExQ\
+QVBFUiAqLwoud3B7cG9zaXRpb246YWJzb2x1dGU7aW5zZXQ6MDtiYWNrZ3JvdW5kOmxpbmVhci1ncmFkaWVudCgxNjBkZWcsIzBh\
+MGExZSAwJSwjMWEwNTMzIDQwJSwjMGQxZjNjIDEwMCUpfQoud3A6OmFmdGVye2NvbnRlbnQ6Jyc7cG9zaXRpb246YWJzb2x1dGU7\
+aW5zZXQ6MDsKICBiYWNrZ3JvdW5kOnJhZGlhbC1ncmFkaWVudChlbGxpcHNlIGF0IDMwJSA2MCUscmdiYSg5OSwxMDIsMjQxLC4y\
+NSkgMCUsdHJhbnNwYXJlbnQgNjAlKSwKICAgICAgICAgICAgIHJhZGlhbC1ncmFkaWVudChlbGxpcHNlIGF0IDgwJSAyMCUscmdi\
+YSgxMzksOTIsMjQ2LC4yKSAwJSx0cmFuc3BhcmVudCA1MCUpfQoKLyogU1RBVFVTIEJBUiAqLwouc2J7cG9zaXRpb246YWJzb2x1\
+dGU7dG9wOjA7bGVmdDowO3JpZ2h0OjA7aGVpZ2h0OjI4cHg7ei1pbmRleDoxMDA7CiAgcGFkZGluZzowIDE2cHg7ZGlzcGxheTpm\
+bGV4O2FsaWduLWl0ZW1zOmNlbnRlcjtqdXN0aWZ5LWNvbnRlbnQ6c3BhY2UtYmV0d2Vlbn0KLnNiLXRpbWV7Zm9udC1zaXplOjEz\
+cHg7Zm9udC13ZWlnaHQ6NzAwO2NvbG9yOiNmZmZ9Ci5zYi1pY29uc3tkaXNwbGF5OmZsZXg7Z2FwOjVweDthbGlnbi1pdGVtczpj\
+ZW50ZXI7Zm9udC1zaXplOjEycHg7Y29sb3I6I2ZmZn0KCi8qIERBVEUgV0lER0VUICovCi5kYXRlLXdpZGdldHtwb3NpdGlvbjph\
+YnNvbHV0ZTt0b3A6MzhweDtsZWZ0OjA7cmlnaHQ6MDt0ZXh0LWFsaWduOmNlbnRlcjt6LWluZGV4OjEwfQouZGF0ZS10aW1le2Zv\
+bnQtc2l6ZTo1MnB4O2ZvbnQtd2VpZ2h0OjIwMDtjb2xvcjojZmZmO2xldHRlci1zcGFjaW5nOi0ycHg7bGluZS1oZWlnaHQ6MX0K\
+LmRhdGUtc3Vie2ZvbnQtc2l6ZToxNHB4O2NvbG9yOnJnYmEoMjU1LDI1NSwyNTUsLjYpO21hcmdpbi10b3A6NHB4O2ZvbnQtd2Vp\
+Z2h0OjQwMH0KCi8qIE5PVElGSUNBVElPTiBQSUxMICovCi5ub3RpZntwb3NpdGlvbjphYnNvbHV0ZTt0b3A6MTQwcHg7bGVmdDoy\
+MHB4O3JpZ2h0OjIwcHg7ei1pbmRleDoxMDsKICBiYWNrZ3JvdW5kOnJnYmEoMjU1LDI1NSwyNTUsLjEpO2JhY2tkcm9wLWZpbHRl\
+cjpibHVyKDIwcHgpOwogIGJvcmRlcjoxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwuMTUpO2JvcmRlci1yYWRpdXM6MjBweDtw\
+YWRkaW5nOjEycHggMTZweDsKICBkaXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDoxMnB4O2N1cnNvcjpwb2ludGVy\
+fQoubm90aWYtaWNvbntmb250LXNpemU6MjBweH0KLm5vdGlmLXRleHR7ZmxleDoxfQoubm90aWYtYXBwe2ZvbnQtc2l6ZToxMXB4\
+O2NvbG9yOnJnYmEoMjU1LDI1NSwyNTUsLjUpO2ZvbnQtd2VpZ2h0OjYwMDt0ZXh0LXRyYW5zZm9ybTp1cHBlcmNhc2U7bGV0dGVy\
+LXNwYWNpbmc6LjVweH0KLm5vdGlmLW1zZ3tmb250LXNpemU6MTNweDtjb2xvcjojZmZmO21hcmdpbi10b3A6MnB4fQoubm90aWYt\
+dGltZXtmb250LXNpemU6MTFweDtjb2xvcjpyZ2JhKDI1NSwyNTUsMjU1LC40KX0KCi8qIEFQUCBHUklEICovCi5hcHBze3Bvc2l0\
+aW9uOmFic29sdXRlO3RvcDoyMjBweDtsZWZ0OjA7cmlnaHQ6MDtwYWRkaW5nOjAgMTZweDsKICBkaXNwbGF5OmdyaWQ7Z3JpZC10\
+ZW1wbGF0ZS1jb2x1bW5zOnJlcGVhdCg0LDFmcik7Z2FwOjE2cHggOHB4O3otaW5kZXg6MTB9Ci5hcHB7ZGlzcGxheTpmbGV4O2Zs\
+ZXgtZGlyZWN0aW9uOmNvbHVtbjthbGlnbi1pdGVtczpjZW50ZXI7Z2FwOjVweDtjdXJzb3I6cG9pbnRlcjtwYWRkaW5nOjZweCA0\
+cHg7Ym9yZGVyLXJhZGl1czoxNnB4O3RyYW5zaXRpb246YmFja2dyb3VuZCAuMTVzfQouYXBwOmFjdGl2ZXtiYWNrZ3JvdW5kOnJn\
+YmEoMjU1LDI1NSwyNTUsLjEpfQouYXBwLWl7d2lkdGg6NThweDtoZWlnaHQ6NThweDtib3JkZXItcmFkaXVzOjE2cHg7ZGlzcGxh\
+eTpmbGV4O2FsaWduLWl0ZW1zOmNlbnRlcjtqdXN0aWZ5LWNvbnRlbnQ6Y2VudGVyOwogIGZvbnQtc2l6ZToyOHB4O2JveC1zaGFk\
+b3c6MCA0cHggMjBweCByZ2JhKDAsMCwwLC40KTtmbGV4LXNocmluazowfQouYXBwLWx7Zm9udC1zaXplOjExcHg7Y29sb3I6cmdi\
+YSgyNTUsMjU1LDI1NSwuOSk7dGV4dC1zaGFkb3c6MCAxcHggNnB4IHJnYmEoMCwwLDAsLjgpO2ZvbnQtd2VpZ2h0OjUwMDt0ZXh0\
+LWFsaWduOmNlbnRlcn0KCi8qIERPQ0sgKi8KLmRvY2t7cG9zaXRpb246YWJzb2x1dGU7Ym90dG9tOjI4cHg7bGVmdDoxNnB4O3Jp\
+Z2h0OjE2cHg7ei1pbmRleDoxMDsKICBiYWNrZ3JvdW5kOnJnYmEoMjU1LDI1NSwyNTUsLjEyKTtiYWNrZHJvcC1maWx0ZXI6Ymx1\
+cigzMHB4KTsKICBib3JkZXI6MXB4IHNvbGlkIHJnYmEoMjU1LDI1NSwyNTUsLjE1KTtib3JkZXItcmFkaXVzOjI4cHg7CiAgcGFk\
+ZGluZzoxMHB4IDIwcHg7ZGlzcGxheTpmbGV4O2p1c3RpZnktY29udGVudDpzcGFjZS1hcm91bmQ7YWxpZ24taXRlbXM6Y2VudGVy\
+fQoKLyogR0VTVFVSRSBCQVIgKi8KLmdlc3R1cmV7cG9zaXRpb246YWJzb2x1dGU7Ym90dG9tOjhweDtsZWZ0OjUwJTt0cmFuc2Zv\
+cm06dHJhbnNsYXRlWCgtNTAlKTsKICB3aWR0aDoxMDBweDtoZWlnaHQ6NHB4O2JhY2tncm91bmQ6cmdiYSgyNTUsMjU1LDI1NSwu\
+MzUpO2JvcmRlci1yYWRpdXM6MnB4O3otaW5kZXg6MjAwfQoKLyogQlJPV1NFUiAqLwouYnJvd3Nlcntwb3NpdGlvbjphYnNvbHV0\
+ZTtpbnNldDowO3otaW5kZXg6MzAwO2Rpc3BsYXk6bm9uZTtmbGV4LWRpcmVjdGlvbjpjb2x1bW47YmFja2dyb3VuZDojMWExYTJl\
+fQouYnJvd3Nlci5vbntkaXNwbGF5OmZsZXh9Ci5icm93LWJhcntiYWNrZ3JvdW5kOiMxMTE4Mjc7cGFkZGluZzo4cHggMTBweDtk\
+aXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo4cHg7ZmxleC1zaHJpbms6MDsKICBib3JkZXItYm90dG9tOjFweCBz\
+b2xpZCByZ2JhKDI1NSwyNTUsMjU1LC4wOCl9Ci5icm93LWJ0bntiYWNrZ3JvdW5kOm5vbmU7Ym9yZGVyOm5vbmU7Y29sb3I6Izlj\
+YTNhZjtmb250LXNpemU6MThweDtjdXJzb3I6cG9pbnRlcjtwYWRkaW5nOjRweCA2cHg7CiAgYm9yZGVyLXJhZGl1czo2cHg7ZGlz\
+cGxheTpmbGV4O2FsaWduLWl0ZW1zOmNlbnRlcjtqdXN0aWZ5LWNvbnRlbnQ6Y2VudGVyfQouYnJvdy1idG46YWN0aXZle2JhY2tn\
+cm91bmQ6cmdiYSgyNTUsMjU1LDI1NSwuMSl9Ci5icm93LXVybHtmbGV4OjE7cGFkZGluZzo4cHggMTRweDtib3JkZXItcmFkaXVz\
+OjIwcHg7YmFja2dyb3VuZDpyZ2JhKDI1NSwyNTUsMjU1LC4wOCk7CiAgY29sb3I6I2ZmZjtib3JkZXI6MXB4IHNvbGlkIHJnYmEo\
+MjU1LDI1NSwyNTUsLjEyKTtmb250LXNpemU6MTNweDtvdXRsaW5lOm5vbmU7Zm9udC1mYW1pbHk6aW5oZXJpdH0KLmJyb3ctdGFi\
+c3tkaXNwbGF5OmZsZXg7YmFja2dyb3VuZDojMTExODI3O2JvcmRlci1ib3R0b206MXB4IHNvbGlkIHJnYmEoMjU1LDI1NSwyNTUs\
+LjA2KTtvdmVyZmxvdy14OmF1dG87ZmxleC1zaHJpbms6MH0KLnRhYntwYWRkaW5nOjhweCAxNHB4O2ZvbnQtc2l6ZToxMnB4O2Nv\
+bG9yOnJnYmEoMjU1LDI1NSwyNTUsLjUpO3doaXRlLXNwYWNlOm5vd3JhcDtjdXJzb3I6cG9pbnRlcjsKICBib3JkZXItYm90dG9t\
+OjJweCBzb2xpZCB0cmFuc3BhcmVudDtkaXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo2cHh9Ci50YWIuYWN0aXZl\
+e2NvbG9yOiM4MThjZjg7Ym9yZGVyLWJvdHRvbS1jb2xvcjojODE4Y2Y4O2JhY2tncm91bmQ6cmdiYSgxMjksMTQwLDI0OCwuMSl9\
+Ci50YWItY2xvc2V7Zm9udC1zaXplOjE0cHg7Y29sb3I6cmdiYSgyNTUsMjU1LDI1NSwuMyk7bWFyZ2luLWxlZnQ6NHB4fQouYnJv\
+dy1mcmFtZXtmbGV4OjE7Ym9yZGVyOm5vbmU7YmFja2dyb3VuZDojZmZmfQouYnJvdy1uYXZiYXJ7YmFja2dyb3VuZDojMTExODI3\
+O3BhZGRpbmc6OHB4IDIwcHg7ZGlzcGxheTpmbGV4O2p1c3RpZnktY29udGVudDpzcGFjZS1hcm91bmQ7CiAgYm9yZGVyLXRvcDox\
+cHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwuMDYpO2ZsZXgtc2hyaW5rOjB9CgpAa2V5ZnJhbWVzIHNsaWRlVXB7ZnJvbXt0cmFu\
+c2Zvcm06dHJhbnNsYXRlWSgxMDAlKTtvcGFjaXR5OjB9dG97dHJhbnNmb3JtOm5vbmU7b3BhY2l0eToxfX0KLmJyb3dzZXIub257\
+YW5pbWF0aW9uOnNsaWRlVXAgLjI1cyBlYXNlfQo8L3N0eWxlPgo8L2hlYWQ+Cjxib2R5Pgo8ZGl2IGNsYXNzPSJ3cCI+PC9kaXY+\
+Cgo8ZGl2IGNsYXNzPSJzYiI+CiAgPHNwYW4gY2xhc3M9InNiLXRpbWUiIGlkPSJzdCI+MDA6MDA8L3NwYW4+CiAgPGRpdiBjbGFz\
+cz0ic2ItaWNvbnMiPgogICAgPHNwYW4+4pay4pay4payPC9zcGFuPgogICAgPHNwYW4+8J+Uizwvc3Bhbj4KICA8L2Rpdj4KPC9k\
+aXY+Cgo8ZGl2IGNsYXNzPSJkYXRlLXdpZGdldCI+CiAgPGRpdiBjbGFzcz0iZGF0ZS10aW1lIiBpZD0iZHQiPjAwOjAwPC9kaXY+\
+CiAgPGRpdiBjbGFzcz0iZGF0ZS1zdWIiIGlkPSJkcyI+0KHRg9Cx0L7RgtCwLCAxNCDRh9C10YDQstC90Y88L2Rpdj4KPC9kaXY+\
+Cgo8ZGl2IGNsYXNzPSJub3RpZiIgb25jbGljaz0ib3BlbkFwcCgnaHR0cHM6Ly93ZWIudGVsZWdyYW0ub3JnJykiPgogIDxkaXYg\
+Y2xhc3M9Im5vdGlmLWljb24iPuKciO+4jzwvZGl2PgogIDxkaXYgY2xhc3M9Im5vdGlmLXRleHQiPgogICAgPGRpdiBjbGFzcz0i\
+bm90aWYtYXBwIj5UZWxlZ3JhbTwvZGl2PgogICAgPGRpdiBjbGFzcz0ibm90aWYtbXNnIj5DbG91ZFBsYXkg0LfQsNC/0YPRidC1\
+0L3QviEg8J+agDwvZGl2PgogIDwvZGl2PgogIDxkaXYgY2xhc3M9Im5vdGlmLXRpbWUiPtC30LDRgNCw0Lc8L2Rpdj4KPC9kaXY+\
+Cgo8ZGl2IGNsYXNzPSJhcHBzIiBpZD0iYXBwcyI+CiAgPGRpdiBjbGFzcz0iYXBwIiBvbmNsaWNrPSJvcGVuQXBwKCdodHRwczov\
+L3d3dy5nb29nbGUuY29tJykiPgogICAgPGRpdiBjbGFzcz0iYXBwLWkiIHN0eWxlPSJiYWNrZ3JvdW5kOiNmZmYiPvCfjJA8L2Rp\
+dj48ZGl2IGNsYXNzPSJhcHAtbCI+Q2hyb21lPC9kaXY+PC9kaXY+CiAgPGRpdiBjbGFzcz0iYXBwIiBvbmNsaWNrPSJvcGVuQXBw\
+KCdodHRwczovL20ueW91dHViZS5jb20nKSI+CiAgICA8ZGl2IGNsYXNzPSJhcHAtaSIgc3R5bGU9ImJhY2tncm91bmQ6I2ZmMDAw\
+MCI+4pa277iPPC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwiPllvdVR1YmU8L2Rpdj48L2Rpdj4KICA8ZGl2IGNsYXNzPSJhcHAiIG9u\
+Y2xpY2s9Im9wZW5BcHAoJ2h0dHBzOi8vd2ViLnRlbGVncmFtLm9yZycpIj4KICAgIDxkaXYgY2xhc3M9ImFwcC1pIiBzdHlsZT0i\
+YmFja2dyb3VuZDojMjE5NkYzIj7inIjvuI88L2Rpdj48ZGl2IGNsYXNzPSJhcHAtbCI+VGVsZWdyYW08L2Rpdj48L2Rpdj4KICA8\
+ZGl2IGNsYXNzPSJhcHAiIG9uY2xpY2s9Im9wZW5BcHAoJ2h0dHBzOi8vZGlzY29yZC5jb20vYXBwJykiPgogICAgPGRpdiBjbGFz\
+cz0iYXBwLWkiIHN0eWxlPSJiYWNrZ3JvdW5kOiM1ODY1RjIiPvCfkqw8L2Rpdj48ZGl2IGNsYXNzPSJhcHAtbCI+RGlzY29yZDwv\
+ZGl2PjwvZGl2PgogIDxkaXYgY2xhc3M9ImFwcCIgb25jbGljaz0ib3BlbkFwcCgnaHR0cHM6Ly9tLmluc3RhZ3JhbS5jb20nKSI+\
+CiAgICA8ZGl2IGNsYXNzPSJhcHAtaSIgc3R5bGU9ImJhY2tncm91bmQ6bGluZWFyLWdyYWRpZW50KDEzNWRlZywjZjA5NDMzLCNl\
+NjY4M2MsI2RjMjc0MywjY2MyMzY2LCNiYzE4ODgpIj7wn5O4PC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwiPkluc3RhZ3JhbTwvZGl2\
+PjwvZGl2PgogIDxkaXYgY2xhc3M9ImFwcCIgb25jbGljaz0ib3BlbkFwcCgnaHR0cHM6Ly93d3cudGlrdG9rLmNvbScpIj4KICAg\
+IDxkaXYgY2xhc3M9ImFwcC1pIiBzdHlsZT0iYmFja2dyb3VuZDojMDEwMTAxIj7wn461PC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwi\
+PlRpa1RvazwvZGl2PjwvZGl2PgogIDxkaXYgY2xhc3M9ImFwcCIgb25jbGljaz0ib3BlbkFwcCgnaHR0cHM6Ly9tYXBzLmdvb2ds\
+ZS5jb20nKSI+CiAgICA8ZGl2IGNsYXNzPSJhcHAtaSIgc3R5bGU9ImJhY2tncm91bmQ6IzRDQUY1MCI+8J+Xuu+4jzwvZGl2Pjxk\
+aXYgY2xhc3M9ImFwcC1sIj5NYXBzPC9kaXY+PC9kaXY+CiAgPGRpdiBjbGFzcz0iYXBwIiBvbmNsaWNrPSJvcGVuQXBwKCdodHRw\
+czovL2dtYWlsLmNvbScpIj4KICAgIDxkaXYgY2xhc3M9ImFwcC1pIiBzdHlsZT0iYmFja2dyb3VuZDojRUE0MzM1Ij7wn5OnPC9k\
+aXY+PGRpdiBjbGFzcz0iYXBwLWwiPkdtYWlsPC9kaXY+PC9kaXY+CiAgPGRpdiBjbGFzcz0iYXBwIiBvbmNsaWNrPSJvcGVuQXBw\
+KCdodHRwczovL29wZW4uc3BvdGlmeS5jb20nKSI+CiAgICA8ZGl2IGNsYXNzPSJhcHAtaSIgc3R5bGU9ImJhY2tncm91bmQ6IzFE\
+Qjk1NCI+8J+OpzwvZGl2PjxkaXYgY2xhc3M9ImFwcC1sIj5TcG90aWZ5PC9kaXY+PC9kaXY+CiAgPGRpdiBjbGFzcz0iYXBwIiBv\
+bmNsaWNrPSJvcGVuQXBwKCdodHRwczovL3d3dy5uZXRmbGl4LmNvbScpIj4KICAgIDxkaXYgY2xhc3M9ImFwcC1pIiBzdHlsZT0i\
+YmFja2dyb3VuZDojRTUwOTE0Ij7wn46sPC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwiPk5ldGZsaXg8L2Rpdj48L2Rpdj4KICA8ZGl2\
+IGNsYXNzPSJhcHAiIG9uY2xpY2s9Im9wZW5BcHAoJ2h0dHBzOi8vdHdpdHRlci5jb20nKSI+CiAgICA8ZGl2IGNsYXNzPSJhcHAt\
+aSIgc3R5bGU9ImJhY2tncm91bmQ6IzAwMCI+4pyVPC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwiPlg8L2Rpdj48L2Rpdj4KICA8ZGl2\
+IGNsYXNzPSJhcHAiIG9uY2xpY2s9Im9wZW5BcHAoJ2h0dHBzOi8vcmVkZGl0LmNvbScpIj4KICAgIDxkaXYgY2xhc3M9ImFwcC1p\
+IiBzdHlsZT0iYmFja2dyb3VuZDojRkY0NTAwIj7wn6SWPC9kaXY+PGRpdiBjbGFzcz0iYXBwLWwiPlJlZGRpdDwvZGl2PjwvZGl2\
+Pgo8L2Rpdj4KCjxkaXYgY2xhc3M9ImRvY2siPgogIDxkaXYgY2xhc3M9ImFwcCIgb25jbGljaz0ib3BlbkFwcCgnaHR0cHM6Ly93\
+d3cuZ29vZ2xlLmNvbScpIiBzdHlsZT0ibWFyZ2luOjAiPgogICAgPGRpdiBjbGFzcz0iYXBwLWkiIHN0eWxlPSJiYWNrZ3JvdW5k\
+OiNmZmY7d2lkdGg6NTJweDtoZWlnaHQ6NTJweCI+8J+MkDwvZGl2PjwvZGl2PgogIDxkaXYgY2xhc3M9ImFwcCIgb25jbGljaz0i\
+b3BlbkFwcCgnaHR0cHM6Ly9tLnlvdXR1YmUuY29tJykiIHN0eWxlPSJtYXJnaW46MCI+CiAgICA8ZGl2IGNsYXNzPSJhcHAtaSIg\
+c3R5bGU9ImJhY2tncm91bmQ6I2ZmMDAwMDt3aWR0aDo1MnB4O2hlaWdodDo1MnB4Ij7ilrbvuI88L2Rpdj48L2Rpdj4KICA8ZGl2\
+IGNsYXNzPSJhcHAiIG9uY2xpY2s9Im9wZW5BcHAoJ2h0dHBzOi8vd2ViLnRlbGVncmFtLm9yZycpIiBzdHlsZT0ibWFyZ2luOjAi\
+PgogICAgPGRpdiBjbGFzcz0iYXBwLWkiIHN0eWxlPSJiYWNrZ3JvdW5kOiMyMTk2RjM7d2lkdGg6NTJweDtoZWlnaHQ6NTJweCI+\
+4pyI77iPPC9kaXY+PC9kaXY+CiAgPGRpdiBjbGFzcz0iYXBwIiBvbmNsaWNrPSJvcGVuQXBwKCdodHRwczovL2dtYWlsLmNvbScp\
+IiBzdHlsZT0ibWFyZ2luOjAiPgogICAgPGRpdiBjbGFzcz0iYXBwLWkiIHN0eWxlPSJiYWNrZ3JvdW5kOiNFQTQzMzU7d2lkdGg6\
+NTJweDtoZWlnaHQ6NTJweCI+8J+TpzwvZGl2PjwvZGl2Pgo8L2Rpdj4KCjxkaXYgY2xhc3M9Imdlc3R1cmUiPjwvZGl2PgoKPCEt\
+LSBCUk9XU0VSIC0tPgo8ZGl2IGNsYXNzPSJicm93c2VyIiBpZD0iYnIiPgogIDxkaXYgY2xhc3M9ImJyb3ctYmFyIj4KICAgIDxi\
+dXR0b24gY2xhc3M9ImJyb3ctYnRuIiBvbmNsaWNrPSJjbG9zZUJyKCkiPuKclTwvYnV0dG9uPgogICAgPGlucHV0IGNsYXNzPSJi\
+cm93LXVybCIgaWQ9InVybCIgdHlwZT0idGV4dCIgcGxhY2Vob2xkZXI9ItCf0L7RiNGD0Log0LDQsdC+INCw0LTRgNC10YHQsC4u\
+LiIKICAgICAgb25rZXlkb3duPSJpZihldmVudC5rZXk9PT0nRW50ZXInKWdvKHRoaXMudmFsdWUpIj4KICAgIDxidXR0b24gY2xh\
+c3M9ImJyb3ctYnRuIiBvbmNsaWNrPSJnbyhkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgndXJsJykudmFsdWUpIj7ihpI8L2J1dHRv\
+bj4KICA8L2Rpdj4KICA8ZGl2IGNsYXNzPSJicm93LXRhYnMiIGlkPSJ0YWJzIj48L2Rpdj4KICA8aWZyYW1lIGNsYXNzPSJicm93\
+LWZyYW1lIiBpZD0iZnJtIiBhbGxvdz0iKiIgc2FuZGJveD0iYWxsb3ctc2NyaXB0cyBhbGxvdy1zYW1lLW9yaWdpbiBhbGxvdy1m\
+b3JtcyBhbGxvdy1wb3B1cHMgYWxsb3ctdG9wLW5hdmlnYXRpb24iPjwvaWZyYW1lPgogIDxkaXYgY2xhc3M9ImJyb3ctbmF2YmFy\
+Ij4KICAgIDxidXR0b24gY2xhc3M9ImJyb3ctYnRuIiBvbmNsaWNrPSJkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnZnJtJykuY29u\
+dGVudFdpbmRvdy5oaXN0b3J5LmJhY2soKSI+4oaQPC9idXR0b24+CiAgICA8YnV0dG9uIGNsYXNzPSJicm93LWJ0biIgb25jbGlj\
+az0iZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2ZybScpLmNvbnRlbnRXaW5kb3cuaGlzdG9yeS5mb3J3YXJkKCkiPuKGkjwvYnV0\
+dG9uPgogICAgPGJ1dHRvbiBjbGFzcz0iYnJvdy1idG4iIG9uY2xpY2s9ImRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdmcm0nKS5z\
+cmM9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2ZybScpLnNyYyI+4oa6PC9idXR0b24+CiAgICA8YnV0dG9uIGNsYXNzPSJicm93\
+LWJ0biIgb25jbGljaz0iY2xvc2VCcigpIj7ijII8L2J1dHRvbj4KICA8L2Rpdj4KPC9kaXY+Cgo8c2NyaXB0PgpmdW5jdGlvbiBj\
+bG9jaygpewogIGNvbnN0IG49bmV3IERhdGUoKTsKICBjb25zdCBoPW4uZ2V0SG91cnMoKS50b1N0cmluZygpLnBhZFN0YXJ0KDIs\
+JzAnKTsKICBjb25zdCBtPW4uZ2V0TWludXRlcygpLnRvU3RyaW5nKCkucGFkU3RhcnQoMiwnMCcpOwogIGRvY3VtZW50LmdldEVs\
+ZW1lbnRCeUlkKCdzdCcpLnRleHRDb250ZW50PWgrJzonK207CiAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2R0JykudGV4dENv\
+bnRlbnQ9aCsnOicrbTsKICBjb25zdCBkYXlzPVsn0J3QtdC00ZbQu9GPJywn0J/QvtC90LXQtNGW0LvQvtC6Jywn0JLRltCy0YLQ\
+vtGA0L7QuicsJ9Ch0LXRgNC10LTQsCcsJ9Cn0LXRgtCy0LXRgCcsItCfJ9GP0YLQvdC40YbRjyIsJ9Ch0YPQsdC+0YLQsCddOwog\
+IGNvbnN0IG1vbnRocz1bJ9GB0ZbRh9C90Y8nLCfQu9GO0YLQvtCz0L4nLCfQsdC10YDQtdC30L3RjycsJ9C60LLRltGC0L3Rjycs\
+J9GC0YDQsNCy0L3RjycsJ9GH0LXRgNCy0L3RjycsJ9C70LjQv9C90Y8nLCfRgdC10YDQv9C90Y8nLCfQstC10YDQtdGB0L3Rjycs\
+J9C20L7QstGC0L3RjycsJ9C70LjRgdGC0L7Qv9Cw0LTQsCcsJ9Cz0YDRg9C00L3RjyddOwogIGRvY3VtZW50LmdldEVsZW1lbnRC\
+eUlkKCdkcycpLnRleHRDb250ZW50PWRheXNbbi5nZXREYXkoKV0rJywgJytuLmdldERhdGUoKSsnICcrbW9udGhzW24uZ2V0TW9u\
+dGgoKV07Cn0KY2xvY2soKTsgc2V0SW50ZXJ2YWwoY2xvY2ssMTAwMCk7CgpmdW5jdGlvbiBvcGVuQXBwKHVybCl7CiAgZG9jdW1l\
+bnQuZ2V0RWxlbWVudEJ5SWQoJ3VybCcpLnZhbHVlPXVybDsKICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnZnJtJykuc3JjPXVy\
+bDsKICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnYnInKS5jbGFzc0xpc3QuYWRkKCdvbicpOwp9CmZ1bmN0aW9uIGNsb3NlQnIo\
+KXsKICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnYnInKS5jbGFzc0xpc3QucmVtb3ZlKCdvbicpOwogIGRvY3VtZW50LmdldEVs\
+ZW1lbnRCeUlkKCdmcm0nKS5zcmM9Jyc7Cn0KZnVuY3Rpb24gZ28odil7CiAgaWYoIXYpcmV0dXJuOwogIGlmKCF2LnN0YXJ0c1dp\
+dGgoJ2h0dHAnKSl2PSdodHRwczovLycrdjsKICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgndXJsJykudmFsdWU9djsKICBkb2N1\
+bWVudC5nZXRFbGVtZW50QnlJZCgnZnJtJykuc3JjPXY7Cn0KPC9zY3JpcHQ+CjwvYm9keT4KPC9odG1sPgo=" | base64 -d > /app/backend/android.html
+
+RUN mkdir -p $(dirname /app/supervisord.conf) && echo "W3N1cGVydmlzb3JkXQpub2RhZW1vbj10cnVlCmxvZ2ZpbGU9L3Zhci9sb2cvc3VwZXJ2aXNvci9zdXBlcnZpc29yZC5sb2cKcGlk\
+ZmlsZT0vdmFyL3J1bi9zdXBlcnZpc29yZC5waWQKbG9nbGV2ZWw9aW5mbwp1c2VyPXJvb3QKCltwcm9ncmFtOmJhY2tlbmRdCmNv\
+bW1hbmQ9bm9kZSAvYXBwL2JhY2tlbmQvc2VydmVyLmpzCmRpcmVjdG9yeT0vYXBwL2JhY2tlbmQKYXV0b3N0YXJ0PXRydWUKYXV0\
+b3Jlc3RhcnQ9dHJ1ZQpzdGFydHJldHJpZXM9MTAKcHJpb3JpdHk9MTAKZW52aXJvbm1lbnQ9Tk9ERV9FTlY9InByb2R1Y3Rpb24i\
+LENMT1VEUExBWV9QQVNTV09SRD0iJShFTlZfQ0xPVURQTEFZX1BBU1NXT1JEKXMiCnN0ZG91dF9sb2dmaWxlPS92YXIvbG9nL3N1\
+cGVydmlzb3IvYmFja2VuZC5sb2cKc3RkZXJyX2xvZ2ZpbGU9L3Zhci9sb2cvc3VwZXJ2aXNvci9iYWNrZW5kLmVyci5sb2cK" | base64 -d > /app/supervisord.conf
+
+RUN mkdir -p $(dirname /app/ob-rc.xml) && echo "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPG9wZW5ib3hfY29uZmlnIHhtbG5zPSJodHRwOi8vb3BlbmJv\
+eC5vcmcvMy40L3JjIj4KICA8dGhlbWU+PG5hbWU+QXJjLURhcms8L25hbWU+CiAgICA8Zm9udCBwbGFjZT0iQWN0aXZlV2luZG93\
+Ij48bmFtZT5TYW5zPC9uYW1lPjxzaXplPjEwPC9zaXplPjx3ZWlnaHQ+Qm9sZDwvd2VpZ2h0PjwvZm9udD4KICA8L3RoZW1lPgog\
+IDxkZXNrdG9wcz48bnVtYmVyPjE8L251bWJlcj48bmFtZXM+PG5hbWU+Q2xvdWRQbGF5PC9uYW1lPjwvbmFtZXM+PC9kZXNrdG9w\
+cz4KICA8Zm9jdXM+PGZvbGxvd01vdXNlPm5vPC9mb2xsb3dNb3VzZT48Zm9jdXNMYXN0PnllczwvZm9jdXNMYXN0PjwvZm9jdXM+\
+CiAgPHBsYWNlbWVudD48cG9saWN5PlNtYXJ0PC9wb2xpY3k+PC9wbGFjZW1lbnQ+CiAgPGtleWJvYXJkPgogICAgPGtleWJpbmQg\
+a2V5PSJBLUY0Ij48YWN0aW9uIG5hbWU9IkNsb3NlIi8+PC9rZXliaW5kPgogICAgPGtleWJpbmQga2V5PSJzdXBlci1kIj48YWN0\
+aW9uIG5hbWU9IlRvZ2dsZVNob3dEZXNrdG9wIi8+PC9rZXliaW5kPgogIDwva2V5Ym9hcmQ+CiAgPG1vdXNlPgogICAgPGNvbnRl\
+eHQgbmFtZT0iRGVza3RvcCI+CiAgICAgIDxtb3VzZWJpbmQgYnV0dG9uPSJSaWdodCIgYWN0aW9uPSJQcmVzcyI+CiAgICAgICAg\
+PGFjdGlvbiBuYW1lPSJTaG93TWVudSI+PG1lbnU+cm9vdC1tZW51PC9tZW51PjwvYWN0aW9uPgogICAgICA8L21vdXNlYmluZD4K\
+ICAgIDwvY29udGV4dD4KICAgIDxjb250ZXh0IG5hbWU9IkNsaWVudCI+CiAgICAgIDxtb3VzZWJpbmQgYnV0dG9uPSJBLUxlZnQi\
+IGFjdGlvbj0iUHJlc3MiPjxhY3Rpb24gbmFtZT0iRm9jdXMiLz48YWN0aW9uIG5hbWU9IlJhaXNlIi8+PC9tb3VzZWJpbmQ+CiAg\
+ICAgIDxtb3VzZWJpbmQgYnV0dG9uPSJBLUxlZnQiIGFjdGlvbj0iRHJhZyI+PGFjdGlvbiBuYW1lPSJNb3ZlIi8+PC9tb3VzZWJp\
+bmQ+CiAgICAgIDxtb3VzZWJpbmQgYnV0dG9uPSJBLVJpZ2h0IiBhY3Rpb249IkRyYWciPjxhY3Rpb24gbmFtZT0iUmVzaXplIi8+\
+PC9tb3VzZWJpbmQ+CiAgICA8L2NvbnRleHQ+CiAgICA8Y29udGV4dCBuYW1lPSJUaXRsZWJhciI+CiAgICAgIDxtb3VzZWJpbmQg\
+YnV0dG9uPSJMZWZ0IiBhY3Rpb249IkRyYWciPjxhY3Rpb24gbmFtZT0iTW92ZSIvPjwvbW91c2ViaW5kPgogICAgICA8bW91c2Vi\
+aW5kIGJ1dHRvbj0iTGVmdCIgYWN0aW9uPSJEb3VibGVDbGljayI+PGFjdGlvbiBuYW1lPSJUb2dnbGVNYXhpbWl6ZSIvPjwvbW91\
+c2ViaW5kPgogICAgPC9jb250ZXh0PgogIDwvbW91c2U+Cjwvb3BlbmJveF9jb25maWc+Cg==" | base64 -d > /app/ob-rc.xml
+
+RUN mkdir -p $(dirname /app/ob-menu.xml) && echo "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPG9wZW5ib3hfbWVudT4KICA8bWVudSBpZD0icm9vdC1tZW51\
+IiBsYWJlbD0iQ2xvdWRQbGF5IFBDIj4KICAgIDxpdGVtIGxhYmVsPSLwn4yQICBGaXJlZm94IEJyb3dzZXIiPgogICAgICA8YWN0\
+aW9uIG5hbWU9IkV4ZWN1dGUiPjxleGVjdXRlPi9vcHQvZmlyZWZveC9maXJlZm94IC0tbmV3LXdpbmRvdyBodHRwczovL3d3dy5n\
+b29nbGUuY29tPC9leGVjdXRlPjwvYWN0aW9uPgogICAgPC9pdGVtPgogICAgPGl0ZW0gbGFiZWw9IvCfk4EgIEZpbGVzIChUaHVu\
+YXIpIj4KICAgICAgPGFjdGlvbiBuYW1lPSJFeGVjdXRlIj48ZXhlY3V0ZT50aHVuYXIgL3Jvb3Q8L2V4ZWN1dGU+PC9hY3Rpb24+\
+CiAgICA8L2l0ZW0+CiAgICA8aXRlbSBsYWJlbD0i8J+Wpe+4jyAgVGVybWluYWwiPgogICAgICA8YWN0aW9uIG5hbWU9IkV4ZWN1\
+dGUiPjxleGVjdXRlPnh0ZXJtIC1iZyAnIzBkMTExNycgLWZnICcjZTZlZGYzJyAtZmEgJ01vbm9zcGFjZScgLWZzIDEzIC10aXRs\
+ZSBUZXJtaW5hbDwvZXhlY3V0ZT48L2FjdGlvbj4KICAgIDwvaXRlbT4KICAgIDxzZXBhcmF0b3IvPgogICAgPGl0ZW0gbGFiZWw9\
+IvCfk50gIFRleHQgRWRpdG9yIj4KICAgICAgPGFjdGlvbiBuYW1lPSJFeGVjdXRlIj48ZXhlY3V0ZT5tb3VzZXBhZDwvZXhlY3V0\
+ZT48L2FjdGlvbj4KICAgIDwvaXRlbT4KICAgIDxpdGVtIGxhYmVsPSLwn5al77iPICBTeXN0ZW0gTW9uaXRvciI+CiAgICAgIDxh\
+Y3Rpb24gbmFtZT0iRXhlY3V0ZSI+PGV4ZWN1dGU+eHRlcm0gLWUgJ2h0b3AnPC9leGVjdXRlPjwvYWN0aW9uPgogICAgPC9pdGVt\
+PgogICAgPHNlcGFyYXRvci8+CiAgICA8aXRlbSBsYWJlbD0i8J+UhCAgUmVzdGFydCBEZXNrdG9wIj4KICAgICAgPGFjdGlvbiBu\
+YW1lPSJSZXN0YXJ0Ii8+CiAgICA8L2l0ZW0+CiAgPC9tZW51Pgo8L29wZW5ib3hfbWVudT4K" | base64 -d > /app/ob-menu.xml
+
+RUN mkdir -p $(dirname /app/tint2rc) && echo "IyBDbG91ZFBsYXkgdGludDIgY29uZmlnCnJvdW5kZWQgPSAwCmJvcmRlcl93aWR0aCA9IDAKYmFja2dyb3VuZF9jb2xvciA9ICMw\
+ZDExMTcgMTAwCmJvcmRlcl9jb2xvciA9ICMzMDM2M2QgMTAwCgpwYW5lbF9tb25pdG9yID0gYWxsCnBhbmVsX3Bvc2l0aW9uID0g\
+Ym90dG9tIGNlbnRlciBob3Jpem9udGFsCnBhbmVsX3NpemUgPSAxMDAlIDQ0CnBhbmVsX21hcmdpbiA9IDAgMApwYW5lbF9wYWRk\
+aW5nID0gNCAwIDQKcGFuZWxfZG9jayA9IDAKd21fbWVudSA9IDAKcGFuZWxfbGF5ZXIgPSB0b3AKcGFuZWxfYmFja2dyb3VuZF9p\
+ZCA9IDEKcGFuZWxfaXRlbXMgPSBMVFNDCgojIFRhc2tiYXIKdGFza2Jhcl9tb2RlID0gc2luZ2xlX2Rlc2t0b3AKdGFza2Jhcl9w\
+YWRkaW5nID0gMiAyIDIKdGFza2Jhcl9iYWNrZ3JvdW5kX2lkID0gMAp0YXNrYmFyX2FjdGl2ZV9iYWNrZ3JvdW5kX2lkID0gMgoK\
+dGFza19pY29uID0gMQp0YXNrX3RleHQgPSAxCnRhc2tfbWF4aW11bV9zaXplID0gMjIwIDM2CnRhc2tfY2VudGVyZWQgPSAxCnRh\
+c2tfcGFkZGluZyA9IDQgNCA0CnRhc2tfZm9udCA9IFNhbnMgMTAKdGFza19mb250X2NvbG9yID0gI2M5ZDFkOSAxMDAKdGFza19h\
+Y3RpdmVfZm9udF9jb2xvciA9ICNmZmZmZmYgMTAwCnRhc2tfYmFja2dyb3VuZF9pZCA9IDMKdGFza19hY3RpdmVfYmFja2dyb3Vu\
+ZF9pZCA9IDQKCiMgTGF1bmNoZXIKbGF1bmNoZXJfcGFkZGluZyA9IDYgNCA2CmxhdW5jaGVyX2JhY2tncm91bmRfaWQgPSAwCmxh\
+dW5jaGVyX2ljb25fdGhlbWUgPQpsYXVuY2hlcl9pdGVtX2FwcCA9IC9hcHAvZmlyZWZveC5kZXNrdG9wCgojIFN5c3RyYXkKc3lz\
+dHJheV9wYWRkaW5nID0gNCA0IDQKc3lzdHJheV9zb3J0ID0gYXNjZW5kaW5nCnN5c3RyYXlfaWNvbl9zaXplID0gMjIKc3lzdHJh\
+eV9pY29uX2FzYiA9IDEwMCAwIDAKc3lzdHJheV9iYWNrZ3JvdW5kX2lkID0gMAoKIyBDbG9jawp0aW1lMV9mb3JtYXQgPSAlSDol\
+TQp0aW1lMV9mb250ID0gU2FucyBCb2xkIDEzCnRpbWUxX2ZvbnRfY29sb3IgPSAjZmZmZmZmIDEwMAp0aW1lMl9mb3JtYXQgPSAl\
+YSAlZCAlYgp0aW1lMl9mb250ID0gU2FucyA5CnRpbWUyX2ZvbnRfY29sb3IgPSAjOGI5NDllIDEwMApjbG9ja19mb250X2NvbG9y\
+ID0gI2ZmZmZmZiAxMDAKY2xvY2tfcGFkZGluZyA9IDggNApjbG9ja19iYWNrZ3JvdW5kX2lkID0gMAoKIyBCYWNrZ3JvdW5kIDEg\
+LSBwYW5lbApyb3VuZGVkID0gMApib3JkZXJfd2lkdGggPSAwCmJhY2tncm91bmRfY29sb3IgPSAjMGQxMTE3IDEwMApib3JkZXJf\
+Y29sb3IgPSAjMjEyNjJkIDEwMAoKIyBCYWNrZ3JvdW5kIDIgLSBhY3RpdmUgdGFza2JhciBpdGVtCnJvdW5kZWQgPSA0CmJvcmRl\
+cl93aWR0aCA9IDAKYmFja2dyb3VuZF9jb2xvciA9ICMyMTI2MmQgMTAwCmJvcmRlcl9jb2xvciA9ICMzMDM2M2QgMTAwCgojIEJh\
+Y2tncm91bmQgMyAtIHRhc2sKcm91bmRlZCA9IDQKYm9yZGVyX3dpZHRoID0gMApiYWNrZ3JvdW5kX2NvbG9yID0gIzBkMTExNyAw\
+CmJvcmRlcl9jb2xvciA9ICMzMDM2M2QgMAoKIyBCYWNrZ3JvdW5kIDQgLSBhY3RpdmUgdGFzawpyb3VuZGVkID0gNApib3JkZXJf\
+d2lkdGggPSAwCmJhY2tncm91bmRfY29sb3IgPSAjMWY2ZmViIDgwCmJvcmRlcl9jb2xvciA9ICMxZjZmZWIgMTAwCg==" | base64 -d > /app/tint2rc
 
 RUN cd /app/backend && npm install --production
 RUN cd /app/frontend && npm install && npm run build
