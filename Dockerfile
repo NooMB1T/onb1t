@@ -1,5 +1,5 @@
 FROM ubuntu:22.04
-LABEL maintainer="CloudPlay v1.4"
+LABEL maintainer="CloudPlay v1.5"
 ENV DEBIAN_FRONTEND=noninteractive TZ=UTC LANG=C.UTF-8 CLOUDPLAY_PASSWORD=cloudplay
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -9,13 +9,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xfce4 xfce4-terminal \
     arc-theme papirus-icon-theme gtk2-engines-murrine \
     plank \
-    mousepad vlc qbittorrent \
-    gimp inkscape krita \
+    mousepad gedit \
+    vlc qbittorrent \
+    gimp inkscape krita blender \
     libreoffice audacity shotcut kdenlive \
-    flameshot keepassxc btop \
+    flameshot keepassxc btop neofetch \
     telegram-desktop thunderbird \
     filezilla remmina \
     retroarch \
+    tilix \
+    gnome-calculator baobab \
+    cheese \
+    xournalpp \
+    calibre \
+    ghb \
+    timeshift bleachbit \
+    clamav clamtk \
+    wireshark nmap \
+    gparted \
+    font-manager \
     openbox tint2 feh xterm \
     imagemagick ca-certificates netcat-openbsd \
     libdbus-glib-1-2 libgtk-3-0 libxt6 libx11-xcb1 \
@@ -26,19 +38,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir websockify \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Google Chrome
 RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -f -y \
     && rm -f google-chrome-stable_current_amd64.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Discord
+RUN wget -q "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64" \
+    -O /tmp/code.deb \
+    && dpkg -i /tmp/code.deb || apt-get install -f -y \
+    && rm -f /tmp/code.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN wget -q "https://discord.com/api/download?platform=linux&format=deb" -O /tmp/discord.deb \
     && dpkg -i /tmp/discord.deb || apt-get install -f -y \
     && rm -f /tmp/discord.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Wine
 RUN dpkg --add-architecture i386 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -q https://dl.winehq.org/wine-builds/winehq.key \
@@ -49,27 +64,22 @@ RUN dpkg --add-architecture i386 \
     && apt-get install -y --install-recommends winehq-stable winetricks \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Lutris
 RUN add-apt-repository ppa:lutris-team/lutris -y \
     && apt-get update && apt-get install -y lutris \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Steam
 RUN apt-get update && apt-get install -y steam-installer \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Flatpak + магазин
 RUN apt-get update \
     && apt-get install -y flatpak gnome-software gnome-software-plugin-flatpak synaptic \
     && flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
        | tar xz --strip-components=1 -C /opt/novnc \
@@ -1069,6 +1079,25 @@ function createDesktopShortcuts(){
     { name:'Shotcut',       exec:'shotcut',                       icon:'shotcut'               },
     { name:'Kdenlive',      exec:'kdenlive',                      icon:'kdenlive'              },
     { name:'Thunderbird',   exec:'thunderbird',                   icon:'thunderbird'           },
+    { name:'VS Code',       exec:'code --no-sandbox',              icon:'code'                  },
+    { name:'Blender',       exec:'blender',                        icon:'blender'               },
+    { name:'Tilix',         exec:'tilix',                          icon:'tilix'                 },
+    { name:'GParted',       exec:'gparted',                        icon:'gparted'               },
+    { name:'Cheese',        exec:'cheese',                         icon:'cheese'                },
+    { name:'Calculator',    exec:'gnome-calculator',               icon:'gnome-calculator'      },
+    { name:'Timeshift',     exec:'timeshift-gtk',                  icon:'timeshift'             },
+    { name:'BleachBit',     exec:'bleachbit',                      icon:'bleachbit'             },
+    { name:'ClamTK',        exec:'clamtk',                         icon:'clamtk'                },
+    { name:'Xournal++',     exec:'xournalpp',                      icon:'xournalpp'             },
+    { name:'Calibre',       exec:'calibre',                        icon:'calibre-gui'           },
+    { name:'HandBrake',     exec:'ghb',                            icon:'handbrake'             },
+    { name:'Neofetch',      exec:'xfce4-terminal -e neofetch',     icon:'utilities-terminal'    },
+    { name:'Wireshark',     exec:'wireshark',                      icon:'wireshark'             },
+    { name:'nmap',          exec:'xfce4-terminal -e nmap',         icon:'utilities-terminal'    },
+    { name:'Disk Usage',    exec:'baobab',                         icon:'baobab'                },
+    { name:'Text Editor',   exec:'gedit',                          icon:'gedit'                 },
+    { name:'Font Manager',  exec:'font-manager',                   icon:'font-manager'          },
+    { name:'Webcam',        exec:'cheese',                         icon:'cheese'                },
     { name:'Wireshark',     exec:'wireshark',                     icon:'wireshark'             },
     { name:'VirtualBox',    exec:'virtualbox',                    icon:'virtualbox'            },
   ];
@@ -1112,6 +1141,19 @@ function setupTheme(){
   fs.writeFileSync('/usr/local/bin/chrome',
     '#!/bin/bash\nexec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"\n');
   try{ fs.chmodSync('/usr/local/bin/chrome', '755'); }catch{}
+
+  // Autostart: Trust desktop files + Nemo setting
+  fs.writeFileSync('/root/.config/autostart/trust-desktop.desktop',
+    '[Desktop Entry]
+Type=Application
+Name=TrustDesktop
+' +
+    'Exec=bash -c 'gsettings set org.nemo.preferences executable-text-activation launch 2>/dev/null; ' +
+    'sleep 2; for f in /root/Desktop/*.desktop; do gio set \ metadata::trusted true 2>/dev/null; done'
+' +
+    'Terminal=false
+X-GNOME-Autostart-enabled=true
+');
 
   // Autostart Chrome
   fs.writeFileSync('/root/.config/autostart/chrome.desktop',
